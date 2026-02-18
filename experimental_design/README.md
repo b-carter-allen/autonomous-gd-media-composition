@@ -14,7 +14,7 @@ Example: *"Adding glucose to Novel_Bio media will increase V. natriegens growth 
 
 ### Reagents
 
-Which supplements are you optimizing? The daemon currently supports 3 supplements (rows C-H on the plate, 2 replicate wells each). To change which reagents are used, update `SUPPLEMENT_NAMES` and `REAGENT_WELLS` in `gradient_descent.py`.
+Which supplements are you optimizing? The daemon currently supports 3 supplements (cols 5-10, 2 replicate wells each per row). To change which reagents are used, update `SUPPLEMENT_NAMES`, `REAGENT_WELLS`, and `PERTURBATION_COLS` in `gradient_descent.py`.
 
 | Reagent | Well on Reagent Plate | Role |
 |---------|----------------------|------|
@@ -27,7 +27,7 @@ Which supplements are you optimizing? The daemon currently supports 3 supplement
 
 What volumes (in uL) should the optimizer start with? Set these in `INITIAL_COMPOSITION` in `gradient_descent.py`.
 
-Total well volume is 180 uL. The remainder after supplements is filled with Novel_Bio base media.
+Total reagent volume per well is 180 uL (before 20 uL of cells are added = 200 uL total). The remainder after supplements is filled with Novel_Bio base media.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
@@ -35,6 +35,7 @@ Total well volume is 180 uL. The remainder after supplements is filled with Nove
 | NaCl | 20 uL | Starting volume |
 | MgSO4 | 20 uL | Starting volume |
 | Novel_Bio | 120 uL | Auto-calculated (180 - sum of supplements) |
+| Cells | 20 uL | Added from seed well (col 1) during seeding step |
 
 ### Objective Function
 
@@ -49,7 +50,9 @@ Alternatives to consider:
 
 | Parameter | Value | Why |
 |-----------|-------|-----|
-| `WELL_VOLUME_UL` | 180 uL | Fixed by plate format |
+| `REAGENT_VOLUME_UL` | 180 uL | Reagent mix volume (before cells) |
+| `SEED_TRANSFER_VOLUME` | 20 uL | Cells added from seed well |
+| `WELL_VOLUME_UL` | 200 uL | Total volume (reagent + cells) |
 | `MIN_SUPPLEMENT_UL` | 1 uL | Minimum pipettable volume (Flex) |
 | `MAX_SUPPLEMENT_UL` | 90 uL | Prevents any single supplement from dominating |
 | `MIN_NOVEL_BIO_UL` | 90 uL | Ensures cells have base nutrients |
@@ -60,7 +63,7 @@ Alternatives to consider:
 |-----------|---------|-------------|
 | `DELTA_UL` | 10 | Base perturbation size (uL) |
 | `ALPHA` | 1.0 | Learning rate (decays by half when growth decreases) |
-| `MAX_ITERATIONS` | 8 | Limited by plate columns (1 seed column + 8 experiment columns) |
+| `MAX_ITERATIONS` | 8 | One iteration per row (A-H) |
 | `MONITORING_INTERVAL_MINUTES` | 5 | Time between OD600 readings |
 | `MONITORING_READINGS` | 18 | Number of readings (18 x 5 min = 90 min) |
 

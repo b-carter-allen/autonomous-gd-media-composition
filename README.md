@@ -4,15 +4,18 @@ An autonomous optimizer that tunes growth media composition for *Vibrio natriege
 
 ## How It Works
 
-Each iteration uses one column (8 wells) of a 96-well plate:
+Each iteration uses one row (12 wells) of a 96-well plate. Column 1 holds the seed well (cells stock), and columns 2-12 are experimental wells:
 
-| Row | Role | Description |
-|-----|------|-------------|
-| A | Control | Base media only (180 uL Novel_Bio) |
-| B | Center | Current best recipe |
-| C-D | +Glucose | Perturbation wells (duplicates) |
-| E-F | +NaCl | Perturbation wells (duplicates) |
-| G-H | +MgSO4 | Perturbation wells (duplicates) |
+| Column | Role | Composition |
+|--------|------|-------------|
+| 1 | Seed well | NM+Cells stock (pre-loaded) |
+| 2 | Negative control | 200 uL Novel_Bio, no cells |
+| 3 | Positive control | 180 uL Novel_Bio + 20 uL cells |
+| 4 | Center | Current best recipe + 20 uL cells |
+| 5-6 | +Glucose | Perturbation wells (2 reps) + cells |
+| 7-8 | +NaCl | Perturbation wells (2 reps) + cells |
+| 9-10 | +MgSO4 | Perturbation wells (2 reps) + cells |
+| 11-12 | Extra | Additional sample wells + cells |
 
 The daemon loop:
 
@@ -23,7 +26,7 @@ The daemon loop:
 5. Fetches OD600 results from the datasets REST API
 6. Computes delta OD (endpoint - baseline) and the gradient
 7. Steps the composition in the gradient direction
-8. Repeats for up to 8 iterations (one per plate column)
+8. Repeats for up to 8 iterations (one per row, A-H)
 
 ## Results (GD_EXP_003)
 
@@ -149,7 +152,9 @@ All tunable parameters are at the top of `gradient_descent.py`:
 | `DELTA_UL` | 10 | Base perturbation size (uL) |
 | `ALPHA` | 1.0 | Initial learning rate |
 | `MAX_ITERATIONS` | 8 | Max iterations per plate |
-| `WELL_VOLUME_UL` | 180 | Total volume per well (uL) |
+| `REAGENT_VOLUME_UL` | 180 | Reagent mix volume per well (uL, before cells) |
+| `SEED_TRANSFER_VOLUME` | 20 | Cells added from seed well (uL) |
+| `WELL_VOLUME_UL` | 200 | Total volume per well (reagent + cells) |
 | `MIN_SUPPLEMENT_UL` | 1 | Minimum supplement volume if included |
 | `MAX_SUPPLEMENT_UL` | 90 | Maximum supplement volume |
 | `MIN_NOVEL_BIO_UL` | 90 | Minimum base media volume |

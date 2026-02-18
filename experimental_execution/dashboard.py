@@ -20,26 +20,35 @@ import streamlit as st
 ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 COLS = list(range(1, 13))
 SUPPLEMENT_NAMES = ["Glucose", "NaCl", "MgSO4"]
-WELL_VOLUME_UL = 180
+REAGENT_VOLUME_UL = 180
+WELL_VOLUME_UL = 200
 MAX_ITERATIONS = 8
 
-ROW_ROLES = {
-    "A": "Control",
-    "B": "Center",
-    "C": "Glucose +d",
-    "D": "Glucose +d",
-    "E": "NaCl +d",
-    "F": "NaCl +d",
-    "G": "MgSO4 +d",
-    "H": "MgSO4 +d",
+# Row-wise layout: column -> role (each iteration is one row)
+COL_ROLES = {
+    1: "Seed",
+    2: "Neg Control",
+    3: "Pos Control",
+    4: "Center",
+    5: "Glucose +d",
+    6: "Glucose +d",
+    7: "NaCl +d",
+    8: "NaCl +d",
+    9: "MgSO4 +d",
+    10: "MgSO4 +d",
+    11: "Extra",
+    12: "Extra",
 }
 
 ROLE_COLORS = {
-    "Control": "#94a3b8",
+    "Neg Control": "#64748b",
+    "Pos Control": "#94a3b8",
     "Center": "#3b82f6",
     "Glucose +d": "#f59e0b",
     "NaCl +d": "#10b981",
     "MgSO4 +d": "#8b5cf6",
+    "Extra": "#6b7280",
+    "Seed": "#d1d5db",
 }
 
 # Reagent source wells on the compound plate
@@ -134,16 +143,16 @@ def uses_delta_od(history: list) -> bool:
 
 
 def build_plate_data(state: dict, is_delta: bool) -> tuple[np.ndarray, list[list[str]]]:
-    """Build 8x12 arrays for OD values and hover text."""
+    """Build 8x12 arrays for OD values and hover text (row-wise layout)."""
     od_grid = np.full((8, 12), np.nan)
     hover_grid = [["" for _ in range(12)] for _ in range(8)]
 
     for h in state.get("history", []):
         iteration = h["iteration"]
-        col_idx = iteration + 1  # column 2 = iter 1, column 3 = iter 2, ...
-        if col_idx > 12:
+        row_i = iteration - 1  # iteration 1 = row A (index 0)
+        if row_i >= 8:
             continue
-        col_i = col_idx - 1  # 0-indexed
+        row = ROWS[row_i]
 
         od_results = h.get("od_results", {})
         if not od_results:
@@ -156,26 +165,31 @@ def build_plate_data(state: dict, is_delta: bool) -> tuple[np.ndarray, list[list
         well_vols = compute_well_volumes(ta) if ta else {}
 
         if od_results:
+            neg_control_od = od_results.get("neg_control_od", 0)
             control_od = od_results.get("control_od", 0)
             center_od = od_results.get("center_od", 0)
             perturbed = od_results.get("perturbed_ods", {})
+            extra_ods = od_results.get("extra_ods", [0, 0])
 
-            wells_od = {
-                "A": control_od,
-                "B": center_od,
-                "C": perturbed.get("Glucose", [0, 0])[0],
-                "D": perturbed.get("Glucose", [0, 0])[1],
-                "E": perturbed.get("NaCl", [0, 0])[0],
-                "F": perturbed.get("NaCl", [0, 0])[1],
-                "G": perturbed.get("MgSO4", [0, 0])[0],
-                "H": perturbed.get("MgSO4", [0, 0])[1],
+            cols_od = {
+                2: neg_control_od,
+                3: control_od,
+                4: center_od,
+                5: perturbed.get("Glucose", [0, 0])[0],
+                6: perturbed.get("Glucose", [0, 0])[1],
+                7: perturbed.get("NaCl", [0, 0])[0],
+                8: perturbed.get("NaCl", [0, 0])[1],
+                9: perturbed.get("MgSO4", [0, 0])[0],
+                10: perturbed.get("MgSO4", [0, 0])[1],
+                11: extra_ods[0] if extra_ods else 0,
+                12: extra_ods[1] if len(extra_ods) > 1 else 0,
             }
 
-            for row_i, row in enumerate(ROWS):
-                od_val = wells_od.get(row, 0)
+            for col_num, od_val in cols_od.items():
+                col_i = col_num - 1  # 0-indexed
                 od_grid[row_i][col_i] = od_val
-                role = ROW_ROLES[row]
-                well_name = f"{row}{col_idx}"
+                role = COL_ROLES.get(col_num, "")
+                well_name = f"{row}{col_num}"
 
                 # Build volume breakdown for hover
                 vols = well_vols.get(well_name, {})
@@ -210,16 +224,18 @@ def build_plate_data(state: dict, is_delta: bool) -> tuple[np.ndarray, list[list
         iteration_for_seed = row_i + 1
         if iteration_for_seed <= state.get("current_iteration", 0):
             hover_grid[row_i][col_i] = (
-                f"<b>{row}1</b><br>Seed well (round {iteration_for_seed})"
+                f"<b>{row}1</b><br>Seed well (iteration {iteration_for_seed})"
             )
             od_grid[row_i][col_i] = -0.01  # marker value
         else:
             hover_grid[row_i][col_i] = f"<b>{row}1</b><br>Empty seed well"
 
-    # Mark unused columns 10-12
-    for col_i in range(9, 12):
-        for row_i in range(8):
-            hover_grid[row_i][col_i] = f"<b>{ROWS[row_i]}{col_i + 1}</b><br>Unused"
+    # Mark unfilled rows
+    current_iter = state.get("current_iteration", 0)
+    for row_i in range(current_iter, 8):
+        for col_i in range(1, 12):
+            if not hover_grid[row_i][col_i]:
+                hover_grid[row_i][col_i] = f"<b>{ROWS[row_i]}{col_i + 1}</b><br>Empty"
 
     return od_grid, hover_grid
 
@@ -547,13 +563,16 @@ with st.sidebar:
             "higher growth, converging on the best recipe.",
             help="Gradient descent on a 96-well plate"
         )
-    st.markdown("**Well layout per column**")
+    st.markdown("**Well layout per row**")
     st.markdown(
-        "- **Row A** -- Control (Novel_Bio only)\n"
-        "- **Row B** -- Center point (current best)\n"
-        "- **Rows C-D** -- +Glucose perturbation\n"
-        "- **Rows E-F** -- +NaCl perturbation\n"
-        "- **Rows G-H** -- +MgSO4 perturbation"
+        "- **Col 1** -- Seed well (cells stock)\n"
+        "- **Col 2** -- Neg control (no cells)\n"
+        "- **Col 3** -- Pos control (cells only)\n"
+        "- **Col 4** -- Center (current best)\n"
+        "- **Cols 5-6** -- +Glucose perturbation\n"
+        "- **Cols 7-8** -- +NaCl perturbation\n"
+        "- **Cols 9-10** -- +MgSO4 perturbation\n"
+        "- **Cols 11-12** -- Extra wells"
     )
 
 # Detect status
@@ -631,7 +650,7 @@ with col_plate:
         st.markdown(
             '<div class="explanation">'
             "96-well plate colored by growth (delta OD). Green = positive growth, red = negative growth, "
-            "white = no change. Column 1 holds seed wells, columns 2-9 are experiment iterations. "
+            "white = no change. Column 1 holds seed wells. Each row (A-H) is one iteration. "
             "Hover over any well to see growth value and reagent volumes."
             '</div>',
             unsafe_allow_html=True,
@@ -640,7 +659,7 @@ with col_plate:
         st.markdown(
             '<div class="explanation">'
             "96-well plate colored by OD600 (darker green = higher growth). "
-            "Column 1 holds seed wells, columns 2-9 are experiment iterations. "
+            "Column 1 holds seed wells. Each row (A-H) is one iteration. "
             "Hover over any well to see exact reagent volumes."
             '</div>',
             unsafe_allow_html=True,

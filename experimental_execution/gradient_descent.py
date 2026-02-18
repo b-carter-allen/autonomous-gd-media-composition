@@ -4,12 +4,15 @@
 Supplements Novel_Bio with 3 reagents (Glucose, NaCl, MgSO4) and optimizes
 concentrations via gradient descent to maximize OD600 growth after 1.5 hours.
 
-Each iteration uses 1 column (8 wells):
-  Row A: Novel_Bio control (180 uL Novel_Bio only)
-  Row B: Center point (current best composition)
-  Row C-D: +delta Glucose (duplicates)
-  Row E-F: +delta NaCl (duplicates)
-  Row G-H: +delta MgSO4 (duplicates)
+Each iteration uses 1 row (12 wells), with column 1 as the seed well:
+  Col 1:    Seed well (NM+Cells stock, pre-loaded)
+  Col 2:    Negative control (200 uL Novel_Bio, no cells)
+  Col 3:    Positive control (180 uL Novel_Bio + 20 uL cells)
+  Col 4:    Center point (current best composition + cells)
+  Col 5-6:  +delta Glucose (2 replicates + cells)
+  Col 7-8:  +delta NaCl (2 replicates + cells)
+  Col 9-10: +delta MgSO4 (2 replicates + cells)
+  Col 11-12: Extra wells (center duplicates + cells)
 
 Autonomous daemon loop:
   1. Generate transfer array from current composition
@@ -19,7 +22,7 @@ Autonomous daemon loop:
   5. Poll for completion via MCP
   6. Fetch OD600 results from datasets REST API (baseline + endpoint)
   7. Compute growth delta (endpoint - baseline) and gradient
-  8. Repeat until convergence
+  8. Repeat for up to 8 iterations (one per row, A-H)
 
 Objective function: delta OD600 (growth = endpoint - baseline), not absolute OD.
 This normalizes for varying initial cell densities across wells.
@@ -69,23 +72,38 @@ REAGENT_WELLS = {
     "Novel_Bio": "D1",
 }
 
-# Reagent names in order (matches rows C/D, E/F, G/H)
+# Reagent names in order (matches cols 5/6, 7/8, 9/10)
 SUPPLEMENT_NAMES = ["Glucose", "NaCl", "MgSO4"]
 
-# Plate layout: row -> purpose
-ROW_LABELS = {
-    "A": "control",
-    "B": "center",
-    "C": "glucose_rep1",
-    "D": "glucose_rep2",
-    "E": "nacl_rep1",
-    "F": "nacl_rep2",
-    "G": "mgso4_rep1",
-    "H": "mgso4_rep2",
+# Plate layout: column -> purpose (row-wise iteration)
+COL_LABELS = {
+    1: "seed",
+    2: "neg_control",
+    3: "pos_control",
+    4: "center",
+    5: "glucose_rep1",
+    6: "glucose_rep2",
+    7: "nacl_rep1",
+    8: "nacl_rep2",
+    9: "mgso4_rep1",
+    10: "mgso4_rep2",
+    11: "extra1",
+    12: "extra2",
 }
 
+# Perturbation column pairs: (col1, col2, supplement_name)
+PERTURBATION_COLS = [
+    (5, 6, "Glucose"),
+    (7, 8, "NaCl"),
+    (9, 10, "MgSO4"),
+]
+
+# Volumes
+REAGENT_VOLUME_UL = 180   # Reagent mix volume per well (before cells)
+SEED_TRANSFER_VOLUME = 20  # Cells added from seed well
+WELL_VOLUME_UL = 200       # Total volume (reagent + cells)
+
 # Constraints
-WELL_VOLUME_UL = 180
 MIN_SUPPLEMENT_UL = 1   # Minimum if included (can be 0)
 MAX_SUPPLEMENT_UL = 90  # Maximum per supplement
 MIN_NOVEL_BIO_UL = 90   # Minimum Novel_Bio volume
@@ -93,7 +111,7 @@ MIN_NOVEL_BIO_UL = 90   # Minimum Novel_Bio volume
 # Algorithm parameters
 DELTA_UL = 10            # Perturbation step size
 ALPHA = 1.0              # Learning rate (multiplied by delta for step size)
-MAX_ITERATIONS = 8       # Max iterations (limited by 8 seed wells in column 1)
+MAX_ITERATIONS = 8       # Max iterations (one per row, A-H)
 CONVERGENCE_ROUNDS = 2   # Stop if no improvement for this many consecutive rounds
 
 # Starting point (iteration 1 center)
@@ -113,7 +131,7 @@ MONITORING_READINGS = 18  # 1.5 hours
 DATA_DIR = Path(__file__).parent.parent / "data" / "gradient_descent"
 WORKFLOW_TEMPLATE_PATH = Path(__file__).parent / "workflow_template.py"
 
-# Seed well rows
+# Iteration rows (one row per iteration)
 ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
 # Daemon config
@@ -155,8 +173,8 @@ def save_state(state: dict):
 
 
 def compute_novel_bio(supplements: dict) -> int:
-    """Compute Novel_Bio volume to fill remaining well volume."""
-    return WELL_VOLUME_UL - sum(supplements.values())
+    """Compute Novel_Bio volume to fill remaining reagent volume (before cells)."""
+    return REAGENT_VOLUME_UL - sum(supplements.values())
 
 
 def apply_constraints(supplements: dict) -> dict:
@@ -203,54 +221,59 @@ def make_perturbed(center: dict, supplement_name: str, delta: int) -> dict:
 
 def generate_transfer_array(
     center: dict,
-    column_index: int,
+    row_letter: str,
     delta: int = DELTA_UL,
 ) -> list:
-    """Generate a transfer array for one iteration (8 wells in 1 column).
+    """Generate a transfer array for one iteration (11 wells in 1 row).
 
     Returns: [[source_well, dest_well, volume_uL], ...]
 
-    Row layout:
-      A: Control (180 uL Novel_Bio)
-      B: Center point
-      C: +delta Glucose (rep 1)
-      D: +delta Glucose (rep 2)
-      E: +delta NaCl (rep 1)
-      F: +delta NaCl (rep 2)
-      G: +delta MgSO4 (rep 1)
-      H: +delta MgSO4 (rep 2)
+    Column layout (all in the same row):
+      Col 1:  Seed well (pre-loaded, not part of transfer array)
+      Col 2:  Negative control (200 uL Novel_Bio, no cells)
+      Col 3:  Positive control (180 uL Novel_Bio, cells added by seeding)
+      Col 4:  Center point (current best recipe)
+      Col 5-6:  +delta Glucose (2 reps)
+      Col 7-8:  +delta NaCl (2 reps)
+      Col 9-10: +delta MgSO4 (2 reps)
+      Col 11-12: Extra wells (same as center for now)
     """
     transfers = []
-    col = column_index  # 1-indexed
+    row = row_letter
 
-    # Row A: Control — 180 uL Novel_Bio
-    transfers.append([REAGENT_WELLS["Novel_Bio"], f"A{col}", WELL_VOLUME_UL])
+    # Col 2: Negative control — 200 uL Novel_Bio (no cells seeded)
+    transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}2", WELL_VOLUME_UL])
 
-    # Row B: Center point
+    # Col 3: Positive control — 180 uL Novel_Bio (cells added by seeding step)
+    transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}3", REAGENT_VOLUME_UL])
+
+    # Col 4: Center point
     novel_bio_center = compute_novel_bio(center)
     if novel_bio_center > 0:
-        transfers.append([REAGENT_WELLS["Novel_Bio"], f"B{col}", novel_bio_center])
+        transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}4", novel_bio_center])
     for name in SUPPLEMENT_NAMES:
         if center[name] > 0:
-            transfers.append([REAGENT_WELLS[name], f"B{col}", center[name]])
+            transfers.append([REAGENT_WELLS[name], f"{row}4", center[name]])
 
-    # Rows C-H: Perturbations (2 reps each for 3 supplements)
-    perturbation_rows = [
-        ("C", "D", "Glucose"),
-        ("E", "F", "NaCl"),
-        ("G", "H", "MgSO4"),
-    ]
-
-    for row1, row2, supplement in perturbation_rows:
+    # Cols 5-10: Perturbations (2 reps each for 3 supplements)
+    for col1, col2, supplement in PERTURBATION_COLS:
         perturbed = make_perturbed(center, supplement, delta)
         novel_bio_pert = compute_novel_bio(perturbed)
 
-        for row in (row1, row2):
+        for col in (col1, col2):
             if novel_bio_pert > 0:
                 transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}{col}", novel_bio_pert])
             for name in SUPPLEMENT_NAMES:
                 if perturbed[name] > 0:
                     transfers.append([REAGENT_WELLS[name], f"{row}{col}", perturbed[name]])
+
+    # Cols 11-12: Extra wells (duplicate center for additional data)
+    for col in (11, 12):
+        if novel_bio_center > 0:
+            transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}{col}", novel_bio_center])
+        for name in SUPPLEMENT_NAMES:
+            if center[name] > 0:
+                transfers.append([REAGENT_WELLS[name], f"{row}{col}", center[name]])
 
     # Sort: Novel_Bio (D1) first, then MgSO4 (C1), NaCl (B1), Glucose (A1)
     source_order = [
@@ -357,18 +380,27 @@ def gradient_step(
 def get_seed_params(iteration: int) -> dict:
     """Get seed well parameters for an iteration of the combined routine.
 
-    Iteration 1: seed from A1, experiments in column 2, warm up B1
-    Iteration 8: seed from H1, experiments in column 9, no warmup (last round)
+    Row-wise layout: each iteration uses one row (A-H).
+    Seed well is column 1 of the iteration's row.
+    Cells are seeded into cols 3-12 (skip col 2 = negative control).
+
+    Iteration 1: seed from A1, experiments in row A (A2-A12), warm up B1
+    Iteration 8: seed from H1, experiments in row H (H2-H12), no warmup
     """
-    seed_well = f"{ROWS[iteration - 1]}1"
+    row = ROWS[iteration - 1]
+    seed_well = f"{row}1"
     is_last = iteration >= MAX_ITERATIONS
     next_seed_well = f"{ROWS[iteration]}1" if not is_last else "B1"  # dummy for last
     nm_cells_volume = 0 if is_last else 220
+
+    # Wells to seed with cells: cols 3-12 (skip col 2 = neg control)
+    seed_dest_wells = [f"{row}{col}" for col in range(3, 13)]
 
     return {
         "seed_well": seed_well,
         "next_seed_well": next_seed_well,
         "nm_cells_volume": nm_cells_volume,
+        "seed_dest_wells": seed_dest_wells,
     }
 
 
@@ -505,7 +537,7 @@ _mcp_client = McpClient()
 
 def write_workflow_definition(
     transfer_array: list,
-    column_index: int,
+    row_letter: str,
     iteration: int,
     seed_params: dict | None = None,
 ) -> Path:
@@ -537,16 +569,17 @@ def write_workflow_definition(
 
     # Core parameters
     replace_const("TRANSFER_ARRAY", json.dumps(json.dumps(transfer_array)))
-    replace_const("DEST_COLUMN_INDEX", str(column_index))
+    replace_const("DEST_ROW", f'"{row_letter}"')
 
     # Seed parameters (for combined routine template)
     if seed_params:
         replace_const("SEED_WELL", f'"{seed_params["seed_well"]}"')
         replace_const("NEXT_SEED_WELL", f'"{seed_params["next_seed_well"]}"')
         replace_const("NM_CELLS_VOLUME", str(seed_params["nm_cells_volume"]))
+        replace_const("SEED_DEST_WELLS", json.dumps(seed_params["seed_dest_wells"]))
 
     # Tip consumption — add extras for combined routine (seed mixing, seeding, NM warmup)
-    p50_extra = 1 if seed_params else 0   # +1 P50 for seeding (reused 8x)
+    p50_extra = 1 if seed_params else 0   # +1 P50 for seeding (reused for 10 wells)
     p200_extra = 1 if seed_params else 0  # +1 P200 for seed well mixing
     p1000_count = 1 if seed_params and seed_params["nm_cells_volume"] > 0 else 0
     reagent_extra = 1 if seed_params and seed_params["nm_cells_volume"] > 0 else 0
@@ -658,11 +691,11 @@ def _get_plate_uuid(plate_barcode: str) -> str:
     raise RuntimeError(f"Plate '{plate_barcode}' not found on workcell")
 
 
-def fetch_absorbance_results(plate_barcode: str, column_index: int) -> dict:
+def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
     """Fetch OD600 readings for a plate: both baseline (earliest) and endpoint (latest).
 
     Queries the datasets REST API (camelCase response), filters by plate UUID
-    and OD600 wavelength, and extracts well values for the target column.
+    and OD600 wavelength, and extracts well values for the target row.
 
     Returns: {
         "baseline": {well: od600_value},   # First reading (pre-growth)
@@ -694,35 +727,35 @@ def fetch_absorbance_results(plate_barcode: str, column_index: int) -> dict:
     if not absorbance_datasets:
         raise RuntimeError(f"No OD600 datasets found for plate {plate_barcode}")
 
-    # Collect timestamps that have data for our target column wells.
-    # Pre-absorbance readings cover prior columns only (current column is empty),
+    # Collect timestamps that have data for our target row wells.
+    # Pre-absorbance readings cover prior rows only (current row is empty),
     # so we filter to timestamps where at least one target well has a nonzero value.
-    target_wells = [f"{row}{column_index}" for row in ROWS]
-    column_readings = {}
+    target_wells = [f"{row_letter}{col}" for col in range(2, 13)]
+    row_readings = {}
     for ds in absorbance_datasets:
         sd = ds.get("structuredData", {})
         results = sd.get("resultsByWell", {})
         for ts, wells in results.items():
             if any(wells.get(w) for w in target_wells):
-                column_readings[ts] = wells
+                row_readings[ts] = wells
 
-    if not column_readings:
+    if not row_readings:
         raise RuntimeError(
-            f"No OD600 readings found for column {column_index} wells on plate {plate_barcode}"
+            f"No OD600 readings found for row {row_letter} wells on plate {plate_barcode}"
         )
 
-    sorted_timestamps = sorted(column_readings.keys())
-    earliest_well_data = column_readings[sorted_timestamps[0]]
-    latest_well_data = column_readings[sorted_timestamps[-1]]
+    sorted_timestamps = sorted(row_readings.keys())
+    earliest_well_data = row_readings[sorted_timestamps[0]]
+    latest_well_data = row_readings[sorted_timestamps[-1]]
 
-    print(f"    Column {column_index} readings: {sorted_timestamps[0]} -> {sorted_timestamps[-1]} "
+    print(f"    Row {row_letter} readings: {sorted_timestamps[0]} -> {sorted_timestamps[-1]} "
           f"({len(sorted_timestamps)} readings)")
 
-    # Extract the 8 wells in our target column for both timepoints
+    # Extract the 11 wells in our target row (cols 2-12) for both timepoints
     baseline = {}
     endpoint = {}
-    for row in ROWS:
-        well = f"{row}{column_index}"
+    for col in range(2, 13):
+        well = f"{row_letter}{col}"
         baseline[well] = float(earliest_well_data.get(well, 0.0))
         endpoint[well] = float(latest_well_data.get(well, 0.0))
 
@@ -734,45 +767,55 @@ def fetch_absorbance_results(plate_barcode: str, column_index: int) -> dict:
 # =============================================================================
 
 
-def parse_od_results(absorbance_results: dict, column_index: int) -> dict:
+def parse_od_results(absorbance_results: dict, row_letter: str) -> dict:
     """Parse baseline + endpoint absorbance into growth deltas for gradient computation.
 
     Uses delta OD (endpoint - baseline) as the objective function, which normalizes
-    for varying initial cell densities across wells. This was identified as a critical
-    improvement from GD_EXP_002 analysis where 37.5% of gradient directions flipped
-    when using delta vs absolute OD.
+    for varying initial cell densities across wells.
+
+    Row-wise layout:
+      Col 2: Negative control (no cells)
+      Col 3: Positive control (cells in plain media)
+      Col 4: Center point
+      Cols 5-10: Perturbation wells (3 supplements x 2 reps)
+      Cols 11-12: Extra wells
 
     Returns:
         {
-            "control_od": float,       # delta OD for control well
+            "neg_control_od": float,   # delta OD for negative control (no cells)
+            "control_od": float,       # delta OD for positive control
             "center_od": float,        # delta OD for center well
             "perturbed_ods": {supplement: [rep1_delta, rep2_delta]},
+            "extra_ods": [extra1_delta, extra2_delta],
             "abs_control_od": float,   # absolute endpoint (for logging)
             "abs_center_od": float,    # absolute endpoint (for logging)
         }
     """
-    col = column_index
+    row = row_letter
     baseline = absorbance_results.get("baseline", {})
     endpoint = absorbance_results.get("endpoint", {})
 
     def delta(well):
         return endpoint.get(well, 0.0) - baseline.get(well, 0.0)
 
-    control_delta = delta(f"A{col}")
-    center_delta = delta(f"B{col}")
+    neg_control_delta = delta(f"{row}2")
+    pos_control_delta = delta(f"{row}3")
+    center_delta = delta(f"{row}4")
 
-    perturbed_deltas = {
-        "Glucose": [delta(f"C{col}"), delta(f"D{col}")],
-        "NaCl": [delta(f"E{col}"), delta(f"F{col}")],
-        "MgSO4": [delta(f"G{col}"), delta(f"H{col}")],
-    }
+    perturbed_deltas = {}
+    for col1, col2, supplement in PERTURBATION_COLS:
+        perturbed_deltas[supplement] = [delta(f"{row}{col1}"), delta(f"{row}{col2}")]
+
+    extra_deltas = [delta(f"{row}11"), delta(f"{row}12")]
 
     return {
-        "control_od": control_delta,
+        "neg_control_od": neg_control_delta,
+        "control_od": pos_control_delta,
         "center_od": center_delta,
         "perturbed_ods": perturbed_deltas,
-        "abs_control_od": endpoint.get(f"A{col}", 0.0),
-        "abs_center_od": endpoint.get(f"B{col}", 0.0),
+        "extra_ods": extra_deltas,
+        "abs_control_od": endpoint.get(f"{row}3", 0.0),
+        "abs_center_od": endpoint.get(f"{row}4", 0.0),
     }
 
 
@@ -831,13 +874,18 @@ def log_iteration(
 
     if od_results:
         print(f"\n  OD600 Growth (delta OD = endpoint - baseline):")
-        print(f"    Control:  {od_results['control_od']:+.4f}"
+        if "neg_control_od" in od_results:
+            print(f"    Neg Ctrl: {od_results['neg_control_od']:+.4f}  (no cells)")
+        print(f"    Pos Ctrl: {od_results['control_od']:+.4f}"
               + (f"  (abs: {od_results['abs_control_od']:.4f})" if "abs_control_od" in od_results else ""))
         print(f"    Center:   {od_results['center_od']:+.4f}"
               + (f"  (abs: {od_results['abs_center_od']:.4f})" if "abs_center_od" in od_results else ""))
         for name in SUPPLEMENT_NAMES:
             reps = od_results["perturbed_ods"][name]
             print(f"    +d {name}: {reps[0]:+.4f}, {reps[1]:+.4f} (mean={sum(reps)/2:+.4f})")
+        if "extra_ods" in od_results:
+            extras = od_results["extra_ods"]
+            print(f"    Extra:  {extras[0]:+.4f}, {extras[1]:+.4f} (mean={sum(extras)/2:+.4f})")
 
     if gradient:
         print(f"\n  Gradient:")
@@ -873,15 +921,14 @@ def run_iteration(
     8. Check convergence
     """
     iteration = state["current_iteration"] + 1
-    # Column 1 = seed wells, experimental columns start at 2
-    column_index = iteration + 1
+    row_letter = ROWS[iteration - 1]  # Iteration 1 = row A, 2 = row B, ...
     center = state["current_composition"]
     alpha = state["alpha"]
 
     # Seed parameters for combined routine
     seed_params = get_seed_params(iteration)
 
-    print(f"\nPreparing iteration {iteration} (column {column_index})...")
+    print(f"\nPreparing iteration {iteration} (row {row_letter})...")
     print(f"  Seed well: {seed_params['seed_well']}")
     if seed_params["nm_cells_volume"] > 0:
         print(f"  NM+Cells warmup: -> {seed_params['next_seed_well']}")
@@ -927,11 +974,11 @@ def run_iteration(
         # Step 1: Generate transfer array
         # Perturbation delta scales with alpha so we test the actual step size
         perturbation_delta = max(1, int(alpha * DELTA_UL))
-        transfer_array = generate_transfer_array(center, column_index, delta=perturbation_delta)
+        transfer_array = generate_transfer_array(center, row_letter, delta=perturbation_delta)
 
         # Step 2: Write workflow definition
         workflow_path = write_workflow_definition(
-            transfer_array, column_index, iteration, seed_params
+            transfer_array, row_letter, iteration, seed_params
         )
         print(f"  Workflow definition: {workflow_path}")
 
@@ -939,7 +986,7 @@ def run_iteration(
         log_iteration(iteration, center, transfer_array, alpha=alpha)
 
         if dry_run:
-            print(f"\n  [DRY RUN] Would register and run workflow for column {column_index}")
+            print(f"\n  [DRY RUN] Would register and run workflow for row {row_letter}")
             print(f"  Transfer array: {DATA_DIR / f'iteration_{iteration}' / 'transfer_array.json'}")
             return state
 
@@ -994,8 +1041,8 @@ def run_iteration(
 
     # Step 7: Fetch results
     print(f"  Fetching OD600 results...")
-    absorbance_results = fetch_absorbance_results(plate_barcode, column_index)
-    od_results = parse_od_results(absorbance_results, column_index)
+    absorbance_results = fetch_absorbance_results(plate_barcode, row_letter)
+    od_results = parse_od_results(absorbance_results, row_letter)
 
     # Step 8: Compute gradient
     perturbation_delta = max(1, int(alpha * DELTA_UL))
@@ -1043,6 +1090,8 @@ def run_iteration(
         },
         "center_od": od_results["center_od"],
         "control_od": od_results["control_od"],
+        "neg_control_od": od_results.get("neg_control_od"),
+        "extra_ods": od_results.get("extra_ods"),
         "abs_center_od": od_results.get("abs_center_od"),
         "abs_control_od": od_results.get("abs_control_od"),
         "gradient": gradient,

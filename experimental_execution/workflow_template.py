@@ -14,14 +14,17 @@ from src.workflows.workflow_definition_dsl.workflow_definition_descriptor import
 
 # Transfer array: JSON string of [[source_well, dest_well, volume_uL], ...]
 # Source wells are on the reagent plate, dest wells on the experiment plate.
-# Generated from 8 wells (1 column) x 4 reagents per iteration.
+# Generated from 11 wells (1 row) x 4 reagents per iteration.
 TRANSFER_ARRAY = "[]"
 
-# Target experimental column on the 96-well plate (2-9)
-DEST_COLUMN_INDEX = 2
+# Target experimental row on the 96-well plate ("A"-"H")
+DEST_ROW = "A"
 
 # Seed well on experiment plate for this round (A1=round 1, B1=round 2, ...)
 SEED_WELL = "A1"
+
+# Wells to seed with cells from the seed well (cols 3-12, skip col 2 = neg control)
+SEED_DEST_WELLS = ["A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12"]
 
 # Next seed well to warm up with NM+Cells (B1=round 1, C1=round 2, ...)
 # Ignored when NM_CELLS_VOLUME = 0 (round 8)
@@ -46,7 +49,7 @@ REAGENT_TYPE = "GD Compound Stock Plate"
 # Tip consumption for combined routine
 # Reagent transfers: varies by source grouping (reuse_tips_for_same_source)
 # + 1 P200 for seed well mixing
-# + 1 P50 for seeding 8 wells (reused)
+# + 1 P50 for seeding 10 wells (reused)
 # + 1 P1000 for NM+Cells warmup (if nm_cells_volume > 0)
 P50_TIPS_TO_CONSUME = 5  # 4 reagent + 1 seeding
 P200_TIPS_TO_CONSUME = 1  # 1 seed well mixing
@@ -66,7 +69,7 @@ MONITORING_READINGS = 18
 def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinitionDescriptor:
     """Gradient Descent Media Optimization — Single Iteration Workflow.
 
-    One complete iteration of the gradient descent experiment:
+    One complete iteration of the gradient descent experiment (row-wise):
       Phase 1: Pre-iteration absorbance of all filled wells
       Phase 2: Combined liquid handling (reagent transfers + on-plate seeding + NM warmup)
       Phase 3: Monitor OD600 absorbance at 5 min intervals for 1.5 hours (18 readings)
@@ -77,36 +80,36 @@ def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinition
     """
     workflow = WorkflowDefinitionDescriptor(
         description=(
-            f"Gradient Descent Media Optimization: Iteration column {DEST_COLUMN_INDEX}. "
+            f"Gradient Descent Media Optimization: Iteration row {DEST_ROW}. "
             "Combined reagent transfer + on-plate seeding + NM warmup, "
             "then monitors growth via OD600 absorbance for 1.5 hours."
         ),
     )
 
     rows = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    row_index = rows.index(DEST_ROW)  # 0-based index of current row
+    round_number = row_index + 1  # 1-based iteration number
 
     # -------------------------------------------------------------------------
     # Compute well lists for absorbance measurements
     # -------------------------------------------------------------------------
-    # Round number: column 2 = round 1, column 3 = round 2, ...
-    round_number = DEST_COLUMN_INDEX - 1
 
-    # Pre-iteration wells: seed wells + prior experimental columns
+    # Pre-iteration wells: seed wells + prior experimental rows
     pre_wells = []
     for i in range(round_number):
-        pre_wells.append(f"{rows[i]}1")
-    for col in range(2, DEST_COLUMN_INDEX):
-        for row in rows:
-            pre_wells.append(f"{row}{col}")
+        pre_wells.append(f"{rows[i]}1")  # seed wells
+    for r in range(row_index):
+        for col in range(2, 13):
+            pre_wells.append(f"{rows[r]}{col}")  # prior row experimental wells
 
-    # Post-iteration wells: all seed wells (incl. next) + all exp columns (incl. current)
+    # Post-iteration wells: all seed wells (incl. next) + all exp rows (incl. current)
     post_wells = []
     seed_count = round_number + (1 if NM_CELLS_VOLUME > 0 else 0)
     for i in range(seed_count):
         post_wells.append(f"{rows[i]}1")
-    for col in range(2, DEST_COLUMN_INDEX + 1):
-        for row in rows:
-            post_wells.append(f"{row}{col}")
+    for r in range(row_index + 1):
+        for col in range(2, 13):
+            post_wells.append(f"{rows[r]}{col}")
 
     # === PHASE 1: PRE-ITERATION ABSORBANCE ===
     if pre_wells:
@@ -129,7 +132,7 @@ def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinition
             "reagent_type": REAGENT_TYPE,
             "transfer_array": TRANSFER_ARRAY,
             "seed_well": SEED_WELL,
-            "dest_column_index": DEST_COLUMN_INDEX,
+            "seed_dest_wells": SEED_DEST_WELLS,
             "seed_transfer_volume": SEED_TRANSFER_VOLUME,
             "nm_cells_source_well": NM_CELLS_SOURCE_WELL,
             "nm_cells_volume": NM_CELLS_VOLUME,
@@ -157,7 +160,7 @@ def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinition
 
     # === PHASE 3: OD600 MONITORING ===
     # Read absorbance at 5-minute intervals for 1.5 hours (18 readings)
-    # Reads ALL filled wells (seed wells + experimental columns)
+    # Reads ALL filled wells (seed wells + experimental rows)
     monitoring_absorbance = RoutineReference(
         routine_name="Measure Absorbance",
         routine_parameters={

@@ -10,7 +10,7 @@ Fill in the sections below (or create your own files) to document your experimen
 
 What are you testing? What do you expect to find?
 
-Example: *"Adding glucose to Novel_Bio media will increase V. natriegens growth rate, while NaCl and MgSO4 will have minimal or negative effects at the concentrations tested."*
+Example: *"Adding supplement X to Novel_Bio media will increase V. natriegens growth rate, while supplements Y and Z will have minimal or negative effects at the concentrations tested."*
 
 ### Reagents
 
@@ -18,9 +18,9 @@ Which supplements are you optimizing? The daemon currently supports 3 supplement
 
 | Reagent | Well on Reagent Plate | Role |
 |---------|----------------------|------|
-| Glucose | A1 | Supplement 1 |
-| NaCl | B1 | Supplement 2 |
-| MgSO4 | C1 | Supplement 3 |
+| *Your supplement 1* | A1 | Supplement 1 |
+| *Your supplement 2* | B1 | Supplement 2 |
+| *Your supplement 3* | C1 | Supplement 3 |
 | Novel_Bio | D1 | Base media (fills remaining volume) |
 
 ### Starting Composition
@@ -31,9 +31,9 @@ Total reagent volume per well is 180 uL (before 20 uL of cells are added = 200 u
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Glucose | 20 uL | Starting volume |
-| NaCl | 20 uL | Starting volume |
-| MgSO4 | 20 uL | Starting volume |
+| Supplement 1 | 20 uL | Starting volume |
+| Supplement 2 | 20 uL | Starting volume |
+| Supplement 3 | 20 uL | Starting volume |
 | Novel_Bio | 120 uL | Auto-calculated (180 - sum of supplements) |
 | Cells | 20 uL | Added from seed well (col 1) during seeding step |
 

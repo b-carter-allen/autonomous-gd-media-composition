@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gradient descent media optimization for V. natriegens growth.
 
-Supplements Novel_Bio with 3 reagents (Glucose, NaCl, MgSO4) and optimizes
+Supplements Novel_Bio with 3 configurable reagents and optimizes
 concentrations via gradient descent to maximize OD600 growth after 1.5 hours.
 
 Each iteration uses 1 row (12 wells), with column 1 as the seed well:
@@ -9,9 +9,9 @@ Each iteration uses 1 row (12 wells), with column 1 as the seed well:
   Col 2:    Negative control (200 uL Novel_Bio, no cells)
   Col 3:    Positive control (180 uL Novel_Bio + 20 uL cells)
   Col 4:    Center point (current best composition + cells)
-  Col 5-6:  +delta Glucose (2 replicates + cells)
-  Col 7-8:  +delta NaCl (2 replicates + cells)
-  Col 9-10: +delta MgSO4 (2 replicates + cells)
+  Col 5-6:  +delta Supplement 1 (2 replicates + cells)
+  Col 7-8:  +delta Supplement 2 (2 replicates + cells)
+  Col 9-10: +delta Supplement 3 (2 replicates + cells)
   Col 11-12: Extra wells (center duplicates + cells)
 
 Autonomous daemon loop:
@@ -65,15 +65,16 @@ API_HEADERS = {
 }
 
 # Reagent plate well map (24-well deep well, modeled as 96-well in the system)
+# UPDATE THESE with your chosen supplements before running.
 REAGENT_WELLS = {
-    "Glucose": "A1",
-    "NaCl": "B1",
-    "MgSO4": "C1",
+    "Supplement_1": "A1",
+    "Supplement_2": "B1",
+    "Supplement_3": "C1",
     "Novel_Bio": "D1",
 }
 
 # Reagent names in order (matches cols 5/6, 7/8, 9/10)
-SUPPLEMENT_NAMES = ["Glucose", "NaCl", "MgSO4"]
+SUPPLEMENT_NAMES = ["Supplement_1", "Supplement_2", "Supplement_3"]
 
 # Plate layout: column -> purpose (row-wise iteration)
 COL_LABELS = {
@@ -93,9 +94,9 @@ COL_LABELS = {
 
 # Perturbation column pairs: (col1, col2, supplement_name)
 PERTURBATION_COLS = [
-    (5, 6, "Glucose"),
-    (7, 8, "NaCl"),
-    (9, 10, "MgSO4"),
+    (5, 6, "Supplement_1"),
+    (7, 8, "Supplement_2"),
+    (9, 10, "Supplement_3"),
 ]
 
 # Volumes
@@ -115,10 +116,11 @@ MAX_ITERATIONS = 8       # Max iterations (one per row, A-H)
 CONVERGENCE_ROUNDS = 2   # Stop if no improvement for this many consecutive rounds
 
 # Starting point (iteration 1 center)
+# UPDATE THESE to match your SUPPLEMENT_NAMES.
 INITIAL_COMPOSITION = {
-    "Glucose": 20,
-    "NaCl": 20,
-    "MgSO4": 20,
+    "Supplement_1": 20,
+    "Supplement_2": 20,
+    "Supplement_3": 20,
 }
 
 # Monitoring
@@ -233,9 +235,9 @@ def generate_transfer_array(
       Col 2:  Negative control (200 uL Novel_Bio, no cells)
       Col 3:  Positive control (180 uL Novel_Bio, cells added by seeding)
       Col 4:  Center point (current best recipe)
-      Col 5-6:  +delta Glucose (2 reps)
-      Col 7-8:  +delta NaCl (2 reps)
-      Col 9-10: +delta MgSO4 (2 reps)
+      Col 5-6:  +delta Supplement 1 (2 reps)
+      Col 7-8:  +delta Supplement 2 (2 reps)
+      Col 9-10: +delta Supplement 3 (2 reps)
       Col 11-12: Extra wells (same as center for now)
     """
     transfers = []
@@ -275,12 +277,12 @@ def generate_transfer_array(
             if center[name] > 0:
                 transfers.append([REAGENT_WELLS[name], f"{row}{col}", center[name]])
 
-    # Sort: Novel_Bio (D1) first, then MgSO4 (C1), NaCl (B1), Glucose (A1)
+    # Sort: Novel_Bio first (reuse tip), then supplements in reverse order
     source_order = [
-        REAGENT_WELLS["Novel_Bio"],   # D1 — reuse tip, bottom dispense
-        REAGENT_WELLS["MgSO4"],       # C1
-        REAGENT_WELLS["NaCl"],        # B1
-        REAGENT_WELLS["Glucose"],     # A1
+        REAGENT_WELLS["Novel_Bio"],
+        REAGENT_WELLS["Supplement_3"],
+        REAGENT_WELLS["Supplement_2"],
+        REAGENT_WELLS["Supplement_1"],
     ]
     order_map = {well: i for i, well in enumerate(source_order)}
     transfers.sort(key=lambda t: order_map.get(t[0], 99))
@@ -1162,12 +1164,15 @@ def print_final_summary(state: dict):
         print(f"    {name}: {final[name]} uL")
 
     print(f"\n  History:")
-    print(f"  {'Iter':>4} | {'Novel_Bio':>9} | {'Glucose':>7} | {'NaCl':>5} | {'MgSO4':>6} | {'Center OD':>9} | {'Control':>7}")
-    print(f"  {'----':>4} | {'---------':>9} | {'-------':>7} | {'-----':>5} | {'------':>6} | {'---------':>9} | {'-------':>7}")
+    # Build dynamic header from supplement names
+    supp_headers = " | ".join(f"{name:>10}" for name in SUPPLEMENT_NAMES)
+    supp_dashes = " | ".join(f"{'----------':>10}" for _ in SUPPLEMENT_NAMES)
+    print(f"  {'Iter':>4} | {'Novel_Bio':>9} | {supp_headers} | {'Center OD':>9} | {'Control':>7}")
+    print(f"  {'----':>4} | {'---------':>9} | {supp_dashes} | {'---------':>9} | {'-------':>7}")
     for h in state["history"]:
         c = h["composition"]
-        print(f"  {h['iteration']:4d} | {c['Novel_Bio']:9d} | {c['Glucose']:7d} | "
-              f"{c['NaCl']:5d} | {c['MgSO4']:6d} | {h['center_od']:9.4f} | {h['control_od']:7.4f}")
+        supp_vals = " | ".join(f"{c.get(name, 0):10d}" for name in SUPPLEMENT_NAMES)
+        print(f"  {h['iteration']:4d} | {c['Novel_Bio']:9d} | {supp_vals} | {h['center_od']:9.4f} | {h['control_od']:7.4f}")
 
 
 def print_status():
@@ -1192,9 +1197,9 @@ def print_status():
         print(f"\n  History:")
         for h in state["history"]:
             c = h["composition"]
+            supps = ", ".join(f"{name}={c.get(name, 0)}" for name in SUPPLEMENT_NAMES)
             print(f"    Iter {h['iteration']}: NB={c['Novel_Bio']}, "
-                  f"Glc={c['Glucose']}, NaCl={c['NaCl']}, Mg={c['MgSO4']} "
-                  f"-> OD={h['center_od']:.4f}")
+                  f"{supps} -> OD={h['center_od']:.4f}")
 
 
 # =============================================================================

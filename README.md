@@ -12,9 +12,9 @@ Each iteration uses one row (12 wells) of a 96-well plate. Column 1 holds the se
 | 2 | Negative control | 200 uL Novel_Bio, no cells |
 | 3 | Positive control | 180 uL Novel_Bio + 20 uL cells |
 | 4 | Center | Current best recipe + 20 uL cells |
-| 5-6 | +Glucose | Perturbation wells (2 reps) + cells |
-| 7-8 | +NaCl | Perturbation wells (2 reps) + cells |
-| 9-10 | +MgSO4 | Perturbation wells (2 reps) + cells |
+| 5-6 | +Supplement 1 | Perturbation wells (2 reps) + cells |
+| 7-8 | +Supplement 2 | Perturbation wells (2 reps) + cells |
+| 9-10 | +Supplement 3 | Perturbation wells (2 reps) + cells |
 | 11-12 | Extra | Additional sample wells + cells |
 
 The daemon loop:
@@ -27,15 +27,6 @@ The daemon loop:
 6. Computes delta OD (endpoint - baseline) and the gradient
 7. Steps the composition in the gradient direction
 8. Repeats for up to 8 iterations (one per row, A-H)
-
-## Results (GD_EXP_003)
-
-Over 7 iterations on plate GD_EXP_003, the optimizer found:
-
-- **Glucose at 5 uL produced the best growth** — delta OD of +0.062, beating pure base media control (+0.051) by 22%
-- **NaCl consistently hurts growth** — perturbation wells underperformed center by 0.015-0.030 delta OD across all iterations
-- **MgSO4 is slightly negative** — minimal effect, slight negative gradient
-- **Optimal composition**: low Glucose (~5 uL), no NaCl, no MgSO4, remainder Novel_Bio
 
 ## Repo Structure
 
@@ -83,11 +74,11 @@ cp .env.example .env
 
 Before running, prepare:
 
-1. **Culture plate** — 96-well plate with a barcode (e.g., `GD_EXP_004`), loaded on the workcell
+1. **Culture plate** — 96-well plate with a barcode, loaded on the workcell
 2. **Reagent plate** — 24-well deep well plate with:
-   - **A1**: Glucose stock
-   - **B1**: NaCl stock
-   - **C1**: MgSO4 stock
+   - **A1**: Supplement 1 stock
+   - **B1**: Supplement 2 stock
+   - **C1**: Supplement 3 stock
    - **D1**: Novel_Bio base media
    - **A2**: NM+Cells (for seeding warmup)
 3. **Tip racks** — ~200 P200 tips, ~60 P50 tips across all iterations

@@ -19,7 +19,7 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 COLS = list(range(1, 13))
-SUPPLEMENT_NAMES = ["Glucose", "NaCl", "MgSO4"]
+SUPPLEMENT_NAMES = ["Supplement_1", "Supplement_2", "Supplement_3"]
 REAGENT_VOLUME_UL = 180
 WELL_VOLUME_UL = 200
 MAX_ITERATIONS = 8
@@ -30,12 +30,12 @@ COL_ROLES = {
     2: "Neg Control",
     3: "Pos Control",
     4: "Center",
-    5: "Glucose +d",
-    6: "Glucose +d",
-    7: "NaCl +d",
-    8: "NaCl +d",
-    9: "MgSO4 +d",
-    10: "MgSO4 +d",
+    5: f"{SUPPLEMENT_NAMES[0]} +d",
+    6: f"{SUPPLEMENT_NAMES[0]} +d",
+    7: f"{SUPPLEMENT_NAMES[1]} +d",
+    8: f"{SUPPLEMENT_NAMES[1]} +d",
+    9: f"{SUPPLEMENT_NAMES[2]} +d",
+    10: f"{SUPPLEMENT_NAMES[2]} +d",
     11: "Extra",
     12: "Extra",
 }
@@ -44,9 +44,9 @@ ROLE_COLORS = {
     "Neg Control": "#64748b",
     "Pos Control": "#94a3b8",
     "Center": "#3b82f6",
-    "Glucose +d": "#f59e0b",
-    "NaCl +d": "#10b981",
-    "MgSO4 +d": "#8b5cf6",
+    f"{SUPPLEMENT_NAMES[0]} +d": "#f59e0b",
+    f"{SUPPLEMENT_NAMES[1]} +d": "#10b981",
+    f"{SUPPLEMENT_NAMES[2]} +d": "#8b5cf6",
     "Extra": "#6b7280",
     "Seed": "#d1d5db",
 }
@@ -54,9 +54,9 @@ ROLE_COLORS = {
 # Reagent source wells on the compound plate
 REAGENT_SOURCE = {
     "D1": "Novel_Bio",
-    "A1": "Glucose",
-    "B1": "NaCl",
-    "C1": "MgSO4",
+    "A1": SUPPLEMENT_NAMES[0],
+    "B1": SUPPLEMENT_NAMES[1],
+    "C1": SUPPLEMENT_NAMES[2],
 }
 
 BASE_DATA_DIR = Path(__file__).parent.parent / "data"
@@ -72,7 +72,7 @@ def load_state() -> dict:
         return json.loads(state_path.read_text())
     return {
         "current_iteration": 0,
-        "current_composition": {"Glucose": 20, "NaCl": 20, "MgSO4": 20},
+        "current_composition": {name: 20 for name in SUPPLEMENT_NAMES},
         "alpha": 1.0,
         "best_od": None,
         "prev_center_od": None,
@@ -175,12 +175,12 @@ def build_plate_data(state: dict, is_delta: bool) -> tuple[np.ndarray, list[list
                 2: neg_control_od,
                 3: control_od,
                 4: center_od,
-                5: perturbed.get("Glucose", [0, 0])[0],
-                6: perturbed.get("Glucose", [0, 0])[1],
-                7: perturbed.get("NaCl", [0, 0])[0],
-                8: perturbed.get("NaCl", [0, 0])[1],
-                9: perturbed.get("MgSO4", [0, 0])[0],
-                10: perturbed.get("MgSO4", [0, 0])[1],
+                5: perturbed.get(SUPPLEMENT_NAMES[0], [0, 0])[0],
+                6: perturbed.get(SUPPLEMENT_NAMES[0], [0, 0])[1],
+                7: perturbed.get(SUPPLEMENT_NAMES[1], [0, 0])[0],
+                8: perturbed.get(SUPPLEMENT_NAMES[1], [0, 0])[1],
+                9: perturbed.get(SUPPLEMENT_NAMES[2], [0, 0])[0],
+                10: perturbed.get(SUPPLEMENT_NAMES[2], [0, 0])[1],
                 11: extra_ods[0] if extra_ods else 0,
                 12: extra_ods[1] if len(extra_ods) > 1 else 0,
             }
@@ -324,7 +324,7 @@ def od_progress_chart(history: list, is_delta: bool) -> go.Figure:
     fig.add_trace(go.Scatter(x=iters, y=center, mode="lines+markers", name="Center", line=dict(color="#3b82f6", width=3), marker=dict(size=8)))
 
     # Perturbation means
-    colors = {"Glucose": "#f59e0b", "NaCl": "#10b981", "MgSO4": "#8b5cf6"}
+    colors = {SUPPLEMENT_NAMES[0]: "#f59e0b", SUPPLEMENT_NAMES[1]: "#10b981", SUPPLEMENT_NAMES[2]: "#8b5cf6"}
     for name in SUPPLEMENT_NAMES:
         means = []
         for h in history:
@@ -361,7 +361,7 @@ def composition_trajectory_chart(history: list) -> go.Figure:
         return fig
 
     iters = [h["iteration"] for h in history]
-    colors = {"Novel_Bio": "#64748b", "Glucose": "#f59e0b", "NaCl": "#10b981", "MgSO4": "#8b5cf6"}
+    colors = {"Novel_Bio": "#64748b", SUPPLEMENT_NAMES[0]: "#f59e0b", SUPPLEMENT_NAMES[1]: "#10b981", SUPPLEMENT_NAMES[2]: "#8b5cf6"}
 
     fig = go.Figure()
     for component in ["Novel_Bio"] + SUPPLEMENT_NAMES:
@@ -569,9 +569,9 @@ with st.sidebar:
         "- **Col 2** -- Neg control (no cells)\n"
         "- **Col 3** -- Pos control (cells only)\n"
         "- **Col 4** -- Center (current best)\n"
-        "- **Cols 5-6** -- +Glucose perturbation\n"
-        "- **Cols 7-8** -- +NaCl perturbation\n"
-        "- **Cols 9-10** -- +MgSO4 perturbation\n"
+        f"- **Cols 5-6** -- +{SUPPLEMENT_NAMES[0]} perturbation\n"
+        f"- **Cols 7-8** -- +{SUPPLEMENT_NAMES[1]} perturbation\n"
+        f"- **Cols 9-10** -- +{SUPPLEMENT_NAMES[2]} perturbation\n"
         "- **Cols 11-12** -- Extra wells"
     )
 
@@ -671,12 +671,12 @@ with col_comp:
     st.markdown(
         '<div class="explanation">'
         "The media recipe the optimizer will test next. Each well is 180 uL total -- "
-        "Novel_Bio is the base media, and the three supplements (Glucose, NaCl, MgSO4) "
+        f"Novel_Bio is the base media, and the three supplements ({', '.join(SUPPLEMENT_NAMES)}) "
         "are the variables being optimized. As supplements increase, Novel_Bio decreases."
         '</div>',
         unsafe_allow_html=True,
     )
-    comp = state.get("current_composition", {"Glucose": 20, "NaCl": 20, "MgSO4": 20})
+    comp = state.get("current_composition", {name: 20 for name in SUPPLEMENT_NAMES})
     st.plotly_chart(composition_bar(comp), use_container_width=True, key="comp_bar")
 
 # Row 2: Progress charts
@@ -791,9 +791,7 @@ if history:
         row = {
             "Iter": h["iteration"],
             "Novel_Bio": c.get("Novel_Bio", "--"),
-            "Glucose": c.get("Glucose", "--"),
-            "NaCl": c.get("NaCl", "--"),
-            "MgSO4": c.get("MgSO4", "--"),
+            **{name: c.get(name, "--") for name in SUPPLEMENT_NAMES},
         }
         if is_delta:
             row["Growth (dOD)"] = f"{h['center_od']:+.4f}" if "center_od" in h else "--"

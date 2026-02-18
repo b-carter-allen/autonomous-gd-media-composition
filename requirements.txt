@@ -1,0 +1,9 @@
+# Gradient descent daemon
+requests>=2.28
+python-dotenv>=1.0
+
+# Dashboard
+streamlit>=1.30
+plotly>=5.0
+pandas>=2.0
+numpy>=1.24

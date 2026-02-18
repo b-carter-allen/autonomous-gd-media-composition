@@ -67,14 +67,14 @@ API_HEADERS = {
 # Reagent plate well map (24-well deep well, modeled as 96-well in the system)
 # UPDATE THESE with your chosen supplements before running.
 REAGENT_WELLS = {
-    "Supplement_1": "A1",
-    "Supplement_2": "B1",
-    "Supplement_3": "C1",
+    "Glucose_100mg_mL": "A1",
+    "MOPS_1M": "B1",
+    "NaCl_2M": "C1",
     "Novel_Bio": "D1",
 }
 
 # Reagent names in order (matches cols 5/6, 7/8, 9/10)
-SUPPLEMENT_NAMES = ["Supplement_1", "Supplement_2", "Supplement_3"]
+SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "NaCl_2M"]
 
 # Plate layout: column -> purpose (row-wise iteration)
 COL_LABELS = {
@@ -94,9 +94,9 @@ COL_LABELS = {
 
 # Perturbation column pairs: (col1, col2, supplement_name)
 PERTURBATION_COLS = [
-    (5, 6, "Supplement_1"),
-    (7, 8, "Supplement_2"),
-    (9, 10, "Supplement_3"),
+    (5, 6, "Glucose_100mg_mL"),
+    (7, 8, "MOPS_1M"),
+    (9, 10, "NaCl_2M"),
 ]
 
 # Volumes
@@ -118,9 +118,9 @@ CONVERGENCE_ROUNDS = 2   # Stop if no improvement for this many consecutive roun
 # Starting point (iteration 1 center)
 # UPDATE THESE to match your SUPPLEMENT_NAMES.
 INITIAL_COMPOSITION = {
-    "Supplement_1": 20,
-    "Supplement_2": 20,
-    "Supplement_3": 20,
+    "Glucose_100mg_mL": 20,
+    "MOPS_1M": 20,
+    "NaCl_2M": 20,
 }
 
 # Monitoring
@@ -280,9 +280,9 @@ def generate_transfer_array(
     # Sort: Novel_Bio first (reuse tip), then supplements in reverse order
     source_order = [
         REAGENT_WELLS["Novel_Bio"],
-        REAGENT_WELLS["Supplement_3"],
-        REAGENT_WELLS["Supplement_2"],
-        REAGENT_WELLS["Supplement_1"],
+        REAGENT_WELLS["NaCl_2M"],
+        REAGENT_WELLS["MOPS_1M"],
+        REAGENT_WELLS["Glucose_100mg_mL"],
     ]
     order_map = {well: i for i, well in enumerate(source_order)}
     transfers.sort(key=lambda t: order_map.get(t[0], 99))

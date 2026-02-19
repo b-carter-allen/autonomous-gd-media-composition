@@ -2,6 +2,20 @@
 
 An autonomous optimizer that tunes growth media composition for *Vibrio natriegens* using gradient descent on a [Monomer Bio](https://monomerbio.com) robotic workcell. The daemon designs media recipes, the robot executes them, OD600 growth is measured, and the algorithm iterates — no human in the loop.
 
+## Current Experiment
+
+**Hypothesis**: Novel_Bio base media may be oversalted for optimal *V. natriegens* growth. We supplement with Glucose (carbon source), MOPS (pH buffer), and DiH2O (to dilute excess salt) and let the optimizer find the best concentrations.
+
+**Supplements**:
+| Reagent | Well | Concentration |
+|---------|------|---------------|
+| Glucose | A1 | 100 mg/mL |
+| MOPS | B1 | 1 M |
+| DiH2O | C1 | Pure |
+| Novel_Bio | D1 | Base media |
+
+**Starting composition**: 20 uL each supplement, 120 uL Novel_Bio, 20 uL cells = 200 uL total.
+
 ## How It Works
 
 Each iteration uses one row (12 wells) of a 96-well plate. Column 1 holds the seed well (cells stock), and columns 2-12 are experimental wells:
@@ -12,9 +26,9 @@ Each iteration uses one row (12 wells) of a 96-well plate. Column 1 holds the se
 | 2 | Negative control | 200 uL Novel_Bio, no cells |
 | 3 | Positive control | 180 uL Novel_Bio + 20 uL cells |
 | 4 | Center | Current best recipe + 20 uL cells |
-| 5-6 | +Supplement 1 | Perturbation wells (2 reps) + cells |
-| 7-8 | +Supplement 2 | Perturbation wells (2 reps) + cells |
-| 9-10 | +Supplement 3 | Perturbation wells (2 reps) + cells |
+| 5-6 | +Glucose | Perturbation wells (2 reps) + cells |
+| 7-8 | +MOPS | Perturbation wells (2 reps) + cells |
+| 9-10 | +DiH2O | Perturbation wells (2 reps) + cells |
 | 11-12 | Extra | Additional sample wells + cells |
 
 The daemon loop:
@@ -32,18 +46,20 @@ The daemon loop:
 
 ```
 autonomous-gd-media-composition/
-├── experimental_design/          # Define WHAT to test (you fill this in)
-│   └── README.md                 # Template for hypothesis, reagents, parameters
+├── experimental_design/          # Define WHAT to test
+│   ├── README.md                 # Template for hypothesis, reagents, parameters
+│   └── EXPERIMENT_INFO.md        # Current experiment details
 │
 ├── experimental_execution/       # HOW to run the experiment
 │   ├── gradient_descent.py       # Autonomous daemon
 │   ├── dashboard.py              # Streamlit visualization
-│   └── workflow_template.py      # Workcell workflow definition
+│   ├── workflow_template.py      # Workcell workflow definition
+│   └── simulate_data.py          # Generate test data for dashboard
 │
 └── data/                         # Created at runtime (gitignored)
 ```
 
-**`experimental_design/`** — Start here. Define your hypothesis, choose your reagents and starting composition, and set algorithm parameters. See the README inside for guidance.
+**`experimental_design/`** — Start here. Define your hypothesis, choose your reagents and starting composition, and set algorithm parameters. See `EXPERIMENT_INFO.md` for the current experiment.
 
 **`experimental_execution/`** — The autonomous system. Once your design is set, the daemon handles everything: pipetting, incubation, measurement, and optimization.
 
@@ -76,9 +92,9 @@ Before running, prepare:
 
 1. **Culture plate** — 96-well plate with a barcode, loaded on the workcell
 2. **Reagent plate** — 24-well deep well plate with:
-   - **A1**: Supplement 1 stock
-   - **B1**: Supplement 2 stock
-   - **C1**: Supplement 3 stock
+   - **A1**: Glucose 100 mg/mL stock
+   - **B1**: MOPS 1 M stock
+   - **C1**: DiH2O (deionized water)
    - **D1**: Novel_Bio base media
    - **A2**: NM+Cells (for seeding warmup)
 3. **Tip racks** — ~200 P200 tips, ~60 P50 tips across all iterations
@@ -110,6 +126,15 @@ The daemon runs in the foreground and logs progress to stdout. For unattended op
 PYTHONUNBUFFERED=1 nohup python gradient_descent.py run <plate_barcode> > gd.log 2>&1 &
 ```
 
+### Simulate Data
+
+Generate test data for the dashboard without a workcell:
+
+```bash
+cd experimental_execution
+python simulate_data.py [plate_barcode]
+```
+
 ## Dashboard
 
 A Streamlit dashboard provides live visualization of experiment progress:
@@ -131,9 +156,10 @@ Features:
 
 **Sign-based gradient ascent** with adaptive learning rate:
 
-- `step = alpha * delta * sign(gradient)`
+- `step = int(alpha * delta) * sign(gradient)`
 - Perturbation delta scales with alpha: `perturbation = max(1, int(alpha * DELTA_UL))`
-- Alpha starts at 1.0 and halves when center growth decreases iteration-over-iteration (floor: 0.5)
+- Alpha starts at 1.0 and halves when center growth decreases (floor: 0.1)
+- Step sizes narrow as alpha decays: 10 → 5 → 2 → 1 uL
 - Objective function: delta OD600 (endpoint - baseline), normalizing for initial cell density
 
 All tunable parameters are at the top of `gradient_descent.py`:
@@ -146,7 +172,7 @@ All tunable parameters are at the top of `gradient_descent.py`:
 | `REAGENT_VOLUME_UL` | 180 | Reagent mix volume per well (uL, before cells) |
 | `SEED_TRANSFER_VOLUME` | 20 | Cells added from seed well (uL) |
 | `WELL_VOLUME_UL` | 200 | Total volume per well (reagent + cells) |
-| `MIN_SUPPLEMENT_UL` | 1 | Minimum supplement volume if included |
+| `MIN_SUPPLEMENT_UL` | 5 | Minimum supplement volume if included |
 | `MAX_SUPPLEMENT_UL` | 90 | Maximum supplement volume |
 | `MIN_NOVEL_BIO_UL` | 90 | Minimum base media volume |
 | `MONITORING_INTERVAL_MINUTES` | 5 | OD600 reading interval |

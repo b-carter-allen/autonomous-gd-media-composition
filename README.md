@@ -42,6 +42,56 @@ The daemon loop:
 7. Steps the composition in the gradient direction
 8. Repeats for up to 8 iterations (one per row, A-H)
 
+## Workflow Diagram
+
+```mermaid
+flowchart TD
+    START([Start Daemon]) --> INIT[Load state\ncurrent_composition\niteration count]
+    INIT --> CHECK{iteration ≤ 8\nand not converged?}
+    CHECK -- No --> DONE([Experiment Complete\nOptimal composition found])
+
+    CHECK -- Yes --> ROW["Select row\n(A=iter 1 · · · H=iter 8)"]
+    ROW --> COMPOSE[Generate transfer array\nfrom center + perturbations]
+    COMPOSE --> UPLOAD[Register workflow definition\nvia MCP]
+    UPLOAD --> INST[Instantiate workflow\non workcell]
+
+    INST --> WF
+
+    subgraph WF["  Workcell Workflow — ~95 min per iteration  "]
+        direction TB
+        P1["📊 Phase 1 — Pre-iteration Absorbance\nBaseline OD600 of seed wells + prior rows"]
+        P2["🤖 Phase 2 — GD Iteration Combined  (OT Flex)\n① Remove lids\n② Transfer reagents: Novel_Bio → cols 2–12\n   Supplements (Glc/MOPS/DiH₂O) → cols 4–12\n③ Mix seed well, seed cols 3–12 (20 µL each)\n④ Warm up next seed well with NM+Cells\n⑤ Replace lids"]
+        P3["📈 Phase 3 — OD600 Growth Monitoring\n18 readings × 5 min intervals = 90 min"]
+        P1 --> P2 --> P3
+    end
+
+    WF --> FETCH[Fetch OD600 results\nfrom REST API]
+    FETCH --> DELTA[Compute Δ OD\nendpoint − baseline per well]
+    DELTA --> GRAD["Compute gradient\n∂(growth)/∂(supplement) via finite differences"]
+    GRAD --> CONV{Center better\nthan last round?}
+    CONV -- No --> DECAY[Decay learning rate α\nα = max(α/2, 0.1)]
+    CONV -- Yes --> STEP
+    DECAY --> STEP[Step composition\nstep = α × Δ × sign(gradient)]
+    STEP --> SAVE[Save state to disk]
+    SAVE --> CHECK
+```
+
+### Plate Layout per Iteration
+
+```
+     Col 1      Col 2       Col 3      Col 4     Col 5-6    Col 7-8    Col 9-10   Col 11-12
+Row A ║ Seed A1 ║ Neg Ctrl  ║ Pos Ctrl ║ Center  ║ +Glucose ║ +MOPS    ║ +DiH2O   ║ Extra
+Row B ║ Seed B1 ║ Neg Ctrl  ║ Pos Ctrl ║ Center  ║ +Glucose ║ +MOPS    ║ +DiH2O   ║ Extra
+ ...  ║  ...    ║   ...     ║   ...    ║  ...    ║   ...    ║  ...     ║   ...    ║  ...
+Row H ║ Seed H1 ║ Neg Ctrl  ║ Pos Ctrl ║ Center  ║ +Glucose ║ +MOPS    ║ +DiH2O   ║ Extra
+
+Seed col 1: pre-loaded NM+Cells (next row warmed up each iteration)
+Neg ctrl:   200 µL Novel_Bio only, no cells — growth floor reference
+Pos ctrl:   180 µL Novel_Bio + 20 µL cells — unoptimized growth reference
+Center:     Current best composition + cells
+Perturbations: center ± 10 µL on one supplement (2 replicates each)
+```
+
 ## Repo Structure
 
 ```

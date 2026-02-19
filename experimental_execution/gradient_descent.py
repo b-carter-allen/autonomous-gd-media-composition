@@ -105,7 +105,7 @@ SEED_TRANSFER_VOLUME = 20  # Cells added from seed well
 WELL_VOLUME_UL = 200       # Total volume (reagent + cells)
 
 # Constraints
-MIN_SUPPLEMENT_UL = 1   # Minimum if included (can be 0)
+MIN_SUPPLEMENT_UL = 5   # Minimum if included (can be 0)
 MAX_SUPPLEMENT_UL = 90  # Maximum per supplement
 MIN_NOVEL_BIO_UL = 90   # Minimum Novel_Bio volume
 

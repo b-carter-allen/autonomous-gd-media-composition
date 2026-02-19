@@ -16,13 +16,14 @@ We expect:
 
 ## Reagents
 
-| Reagent | Well on Reagent Plate | Concentration | Role |
-|---------|----------------------|---------------|------|
-| Glucose | A1 | 100 mg/mL | Carbon source |
-| MOPS | B1 | 1 M | pH buffer |
-| DiH2O | C1 | Pure (deionized water) | Salt dilution |
-| Novel_Bio | D1 | Undiluted | Base media (fills remaining volume) |
-| NM+Cells | A2 | — | Seed culture for warmup |
+| Reagent | Well on Reagent Plate | Volume | Concentration | Role |
+|---------|----------------------|--------|---------------|------|
+| Glucose | A1 | 5 mL | 100 mg/mL | Carbon source |
+| MOPS | B1 | 5 mL | 1 M | pH buffer |
+| DiH2O | C1 | 5 mL | Pure (deionized water) | Salt dilution |
+| Novel_Bio | D1 | 9 mL | Undiluted | Base media (fills remaining volume) |
+| Novel_Bio | D2 | 9 mL | Undiluted | Base media (overflow from D1) |
+| NM+Cells | A2 | 5 mL | — | Seed culture for warmup (refrigerated) |
 
 ## Starting Composition
 
@@ -78,5 +79,6 @@ Step sizes narrow as alpha decays: 10 → 5 → 2 → 1 uL, allowing the optimiz
 ## Notes
 
 - The "GD Iteration Combined" routine on the workcell handles all liquid handling in one step: reagent transfers, on-plate seeding from column 1, and NM+Cells warmup for the next row's seed well.
-- Reagent plate is a 24-well deep well plate (modeled as 96-well in the system). Each well should hold enough stock for all 8 iterations.
+- Reagent plate is a 24-well deep well plate (type: "AGD Stock Plate", modeled as 96-well in the system). Novel_Bio is split across D1 and D2 (9 mL each, 18 mL total) to ensure enough volume for all 8 iterations. Supplements have 5 mL each.
+- NM+Cells in A2 is refrigerated until needed for seed well warmup.
 - DiH2O was chosen instead of NaCl supplementation because the working hypothesis is that Novel_Bio is already oversalted — adding water achieves the same gradient direction while diluting rather than adding more salt.

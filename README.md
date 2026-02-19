@@ -91,12 +91,13 @@ cp .env.example .env
 Before running, prepare:
 
 1. **Culture plate** — 96-well plate with a barcode, loaded on the workcell
-2. **Reagent plate** — 24-well deep well plate with:
-   - **A1**: Glucose 100 mg/mL stock
-   - **B1**: MOPS 1 M stock
-   - **C1**: DiH2O (deionized water)
-   - **D1**: Novel_Bio base media
-   - **A2**: NM+Cells (for seeding warmup)
+2. **Reagent plate** — 24-well deep well plate (type: "AGD Stock Plate") with:
+   - **A1**: Glucose 100 mg/mL (5 mL)
+   - **B1**: MOPS 1 M (5 mL)
+   - **C1**: DiH2O (5 mL)
+   - **D1**: Novel_Bio base media (9 mL)
+   - **D2**: Novel_Bio base media (9 mL, overflow)
+   - **A2**: NM+Cells (5 mL, refrigerated)
 3. **Tip racks** — ~200 P200 tips, ~60 P50 tips across all iterations
 
 ## Running

@@ -50,28 +50,28 @@ flowchart TD
     INIT --> CHECK{iteration ≤ 8\nand not converged?}
     CHECK -- No --> DONE([Experiment Complete\nOptimal composition found])
 
-    CHECK -- Yes --> ROW["Select row\n(A=iter 1 · · · H=iter 8)"]
+    CHECK -- Yes --> ROW[Select row\nA=iter 1 through H=iter 8]
     ROW --> COMPOSE[Generate transfer array\nfrom center + perturbations]
     COMPOSE --> UPLOAD[Register workflow definition\nvia MCP]
     UPLOAD --> INST[Instantiate workflow\non workcell]
 
     INST --> WF
 
-    subgraph WF["  Workcell Workflow — ~95 min per iteration  "]
+    subgraph WF[Workcell Workflow — ~95 min per iteration]
         direction TB
-        P1["📊 Phase 1 — Pre-iteration Absorbance\nBaseline OD600 of seed wells + prior rows"]
-        P2["🤖 Phase 2 — GD Iteration Combined  (OT Flex)\n① Remove lids\n② Transfer reagents: Novel_Bio → cols 2–12\n   Supplements (Glc/MOPS/DiH₂O) → cols 4–12\n③ Mix seed well, seed cols 3–12 (20 µL each)\n④ Warm up next seed well with NM+Cells\n⑤ Replace lids"]
-        P3["📈 Phase 3 — OD600 Growth Monitoring\n18 readings × 5 min intervals = 90 min"]
+        P1[Phase 1 — Pre-iteration Absorbance\nBaseline OD600 of seed wells + prior rows]
+        P2[Phase 2 — GD Iteration Combined — OT Flex\nRemove lids\nTransfer Novel_Bio to cols 2-12\nTransfer supplements to cols 4-12\nMix seed well, seed cols 3-12\nWarm up next seed well with NM+Cells\nReplace lids]
+        P3[Phase 3 — OD600 Growth Monitoring\n18 readings x 5 min intervals = 90 min]
         P1 --> P2 --> P3
     end
 
     WF --> FETCH[Fetch OD600 results\nfrom REST API]
-    FETCH --> DELTA[Compute Δ OD\nendpoint − baseline per well]
-    DELTA --> GRAD["Compute gradient\n∂(growth)/∂(supplement) via finite differences"]
+    FETCH --> DELTA[Compute delta OD\nendpoint minus baseline per well]
+    DELTA --> GRAD[Compute gradient\nd-growth / d-supplement via finite differences]
     GRAD --> CONV{Center better\nthan last round?}
-    CONV -- No --> DECAY[Decay learning rate α\nα = max(α/2, 0.1)]
+    CONV -- No --> DECAY[Decay learning rate\nalpha = max of alpha/2 or 0.1]
     CONV -- Yes --> STEP
-    DECAY --> STEP[Step composition\nstep = α × Δ × sign(gradient)]
+    DECAY --> STEP[Step composition\nstep = alpha x delta x sign of gradient]
     STEP --> SAVE[Save state to disk]
     SAVE --> CHECK
 ```

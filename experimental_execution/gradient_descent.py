@@ -69,12 +69,12 @@ API_HEADERS = {
 REAGENT_WELLS = {
     "Glucose_100mg_mL": "A1",
     "MOPS_1M": "B1",
-    "NaCl_2M": "C1",
+    "DiH2O": "C1",
     "Novel_Bio": "D1",
 }
 
 # Reagent names in order (matches cols 5/6, 7/8, 9/10)
-SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "NaCl_2M"]
+SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "DiH2O"]
 
 # Plate layout: column -> purpose (row-wise iteration)
 COL_LABELS = {
@@ -96,7 +96,7 @@ COL_LABELS = {
 PERTURBATION_COLS = [
     (5, 6, "Glucose_100mg_mL"),
     (7, 8, "MOPS_1M"),
-    (9, 10, "NaCl_2M"),
+    (9, 10, "DiH2O"),
 ]
 
 # Volumes
@@ -120,7 +120,7 @@ CONVERGENCE_ROUNDS = 2   # Stop if no improvement for this many consecutive roun
 INITIAL_COMPOSITION = {
     "Glucose_100mg_mL": 20,
     "MOPS_1M": 20,
-    "NaCl_2M": 20,
+    "DiH2O": 20,
 }
 
 # Monitoring
@@ -280,7 +280,7 @@ def generate_transfer_array(
     # Sort: Novel_Bio first (reuse tip), then supplements in reverse order
     source_order = [
         REAGENT_WELLS["Novel_Bio"],
-        REAGENT_WELLS["NaCl_2M"],
+        REAGENT_WELLS["DiH2O"],
         REAGENT_WELLS["MOPS_1M"],
         REAGENT_WELLS["Glucose_100mg_mL"],
     ]
@@ -1053,7 +1053,7 @@ def run_iteration(
     # Adaptive alpha: halve if center OD decreased from previous round
     if state["prev_center_od"] is not None:
         if od_results["center_od"] < state["prev_center_od"]:
-            alpha = max(0.5, alpha / 2)
+            alpha = max(0.1, alpha / 2)
             print(f"\n  Center OD decreased ({state['prev_center_od']:.4f} -> "
                   f"{od_results['center_od']:.4f}), halving alpha to {alpha}")
 

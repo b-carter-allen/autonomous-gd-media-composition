@@ -19,7 +19,7 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 COLS = list(range(1, 13))
-SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "NaCl_2M"]
+SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "DiH2O"]
 REAGENT_VOLUME_UL = 180
 WELL_VOLUME_UL = 200
 MAX_ITERATIONS = 8

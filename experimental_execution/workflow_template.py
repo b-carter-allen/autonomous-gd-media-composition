@@ -44,7 +44,7 @@ MIX_VOLUME = 100  # uL
 MIX_REPS = 5
 
 # Reagent plate type tag (matches reagent plate tags in the system)
-REAGENT_TYPE = "GD Compound Stock Plate"
+REAGENT_TYPE = "AGD Stock Plate"
 
 # Tip consumption for combined routine
 # Reagent transfers: varies by source grouping (reuse_tips_for_same_source)

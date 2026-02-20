@@ -91,6 +91,21 @@ REAGENT_WELLS = {
 NOVEL_BIO_WELLS = ["D1", "D2", "D3", "D4"]
 NOVEL_BIO_WELL_CAPACITY_UL = 8000  # uL of Novel Bio to load per well
 
+# NM+Cells well on the reagent plate (24-well deep well, well A2)
+NM_CELLS_REAGENT_WELL = "A2"
+NM_CELLS_REAGENT_NAME = "NM+Cells"
+NM_CELLS_FILL_UL = 2000  # Fill target: covers 7-8 rounds × 220 uL + margin
+
+# Supplement fill target per well (conservative upper bound for one experiment)
+SUPPLEMENT_FILL_UL = 3000
+
+# Plate type tag used when registering AGD reagent plates
+AGD_PLATE_TYPE = "AGD Stock Plate"
+
+# Poll interval when waiting for the reagent plate to be checked in
+REAGENT_PLATE_POLL_INTERVAL = 30   # seconds
+REAGENT_PLATE_POLL_TIMEOUT = 1800  # 30 minutes
+
 
 def get_novel_bio_well(cumulative_ul: float) -> str:
     """Return which Novel Bio well to use based on cumulative volume consumed so far."""
@@ -193,6 +208,8 @@ def load_state() -> dict:
         "converged": False,
         "history": [],
         "novel_bio_used_ul": 0.0,
+        "reagent_plate_barcode": None,
+        "reagent_plate_volumes": {},  # {well: volume_uL} — current tracked volumes
     }
 
 
@@ -439,6 +456,221 @@ def get_seed_params(iteration: int) -> dict:
         "nm_cells_volume": nm_cells_volume,
         "seed_dest_wells": seed_dest_wells,
     }
+
+
+# =============================================================================
+# REAGENT PLATE SETUP
+# =============================================================================
+
+
+def _reagent_plate_fill_plan(state: dict) -> dict:
+    """Compute fill volumes (uL) for each well of the AGD reagent plate.
+
+    Returns {well: volume_uL} covering all wells that need to be pre-loaded.
+    Novel Bio: fills whichever wells are needed based on cumulative usage so far.
+    Supplements: fixed SUPPLEMENT_FILL_UL per well (conservative upper bound).
+    NM+Cells: fixed NM_CELLS_FILL_UL.
+    """
+    nb_used = state.get("novel_bio_used_ul", 0.0)
+    remaining_iters = MAX_ITERATIONS - state["current_iteration"]
+
+    # Estimate Novel Bio volume needed for remaining iterations
+    sample_ta = generate_transfer_array(
+        state["current_composition"], ROWS[0], novel_bio_well=NOVEL_BIO_WELLS[0]
+    )
+    nb_per_iter = novel_bio_volume_for_array(sample_ta, NOVEL_BIO_WELLS[0])
+    nb_needed = nb_per_iter * remaining_iters
+
+    # Determine which Novel Bio wells to fill
+    fill = {}
+    first_well_idx = int(nb_used // NOVEL_BIO_WELL_CAPACITY_UL)
+    remaining_in_current = NOVEL_BIO_WELL_CAPACITY_UL - (nb_used % NOVEL_BIO_WELL_CAPACITY_UL)
+    accounted = 0.0
+    for i in range(first_well_idx, len(NOVEL_BIO_WELLS)):
+        w = NOVEL_BIO_WELLS[i]
+        if i == first_well_idx:
+            # Partial fill: only remaining capacity in the current well
+            fill[w] = int(remaining_in_current)
+        else:
+            fill[w] = NOVEL_BIO_WELL_CAPACITY_UL
+        accounted += fill[w]
+        if accounted >= nb_needed:
+            break
+
+    # Supplements
+    for name in SUPPLEMENT_NAMES:
+        fill[REAGENT_WELLS[name]] = SUPPLEMENT_FILL_UL
+
+    # NM+Cells
+    fill[NM_CELLS_REAGENT_WELL] = NM_CELLS_FILL_UL
+
+    return fill
+
+
+def print_reagent_plate_setup(state: dict):
+    """Print instructions for filling the AGD reagent plate for the next experiment."""
+    fill = _reagent_plate_fill_plan(state)
+    nb_used = state.get("novel_bio_used_ul", 0.0)
+    remaining_iters = MAX_ITERATIONS - state["current_iteration"]
+
+    print(f"\n{'='*60}")
+    print(f"  AGD REAGENT PLATE SETUP")
+    print(f"  (Plate type: \"{AGD_PLATE_TYPE}\")")
+    print(f"{'='*60}")
+    print(f"  {remaining_iters} iterations remaining. Fill a 24-well deep well plate:\n")
+
+    # Supplements
+    for name in SUPPLEMENT_NAMES:
+        well = REAGENT_WELLS[name]
+        print(f"  {well:3s}  {name:<22s}  →  {fill[well]:>5} uL")
+
+    # NM+Cells
+    print(f"  {NM_CELLS_REAGENT_WELL:3s}  {'NM+Cells':<22s}  →  {fill[NM_CELLS_REAGENT_WELL]:>5} uL")
+
+    # Novel Bio wells
+    for w in NOVEL_BIO_WELLS:
+        if w in fill:
+            already_used = nb_used % NOVEL_BIO_WELL_CAPACITY_UL if w == get_novel_bio_well(nb_used) and nb_used > 0 else 0
+            note = f"  (~{already_used:.0f} uL already consumed)" if already_used > 0 else ""
+            print(f"  {w:3s}  {'Novel_Bio':<22s}  →  {fill[w]:>5} uL{note}")
+
+    print(f"\n  Load the plate, check it into the workcell, then run the experiment.")
+    print(f"{'='*60}\n")
+
+
+def find_and_setup_reagent_plate(state: dict) -> str | None:
+    """Find a freshly loaded AGD Stock Plate and register its reagents via MCP.
+
+    Polls list_reagent_plates until a plate with:
+      - initial_media_type == AGD_PLATE_TYPE
+      - reagents_by_well == {} (not yet configured)
+    ...appears. Then calls set_reagents_by_well to populate it.
+
+    Returns the plate barcode on success, None on timeout.
+    """
+    fill = _reagent_plate_fill_plan(state)
+
+    # Build reagents_by_well payload for set_reagents_by_well
+    reagents_payload = {}
+
+    # Supplements
+    for name in SUPPLEMENT_NAMES:
+        well = REAGENT_WELLS[name]
+        vol = fill.get(well, 0)
+        if vol > 0:
+            reagents_payload[well] = [{"name": name, "volume": f"{vol} uL"}]
+
+    # NM+Cells
+    nm_vol = fill.get(NM_CELLS_REAGENT_WELL, 0)
+    if nm_vol > 0:
+        reagents_payload[NM_CELLS_REAGENT_WELL] = [
+            {"name": NM_CELLS_REAGENT_NAME, "volume": f"{nm_vol} uL"}
+        ]
+
+    # Novel Bio wells
+    for w in NOVEL_BIO_WELLS:
+        vol = fill.get(w, 0)
+        if vol > 0:
+            reagents_payload[w] = [{"name": "Novel_Bio", "volume": f"{vol} uL"}]
+
+    print(f"\n  Waiting for an empty {AGD_PLATE_TYPE} to be checked in...")
+    print(f"  (Load + check in the plate as shown above, then the system will configure it)")
+
+    start = time.time()
+    while time.time() - start < REAGENT_PLATE_POLL_TIMEOUT:
+        try:
+            plates = _mcp_client.call_tool(
+                "list_reagent_plates",
+                {"is_checked_in": True, "include_reagents": True},
+            )
+        except Exception as e:
+            print(f"    WARNING: Could not list reagent plates: {e}. Retrying...")
+            time.sleep(REAGENT_PLATE_POLL_INTERVAL)
+            continue
+
+        for plate in (plates if isinstance(plates, list) else []):
+            if plate.get("initial_media_type") != AGD_PLATE_TYPE:
+                continue
+            if plate.get("reagents_by_well"):  # already configured — skip
+                continue
+
+            barcode = plate["barcode"]
+            print(f"  Found empty {AGD_PLATE_TYPE}: {barcode}")
+
+            try:
+                _mcp_client.call_tool(
+                    "set_reagents_by_well",
+                    {"plate_barcode": barcode, "reagents_by_well": reagents_payload},
+                )
+            except Exception as e:
+                print(f"  ERROR: Could not set reagents on {barcode}: {e}")
+                return None
+
+            print(f"  Reagents registered on {barcode}:")
+            for well in sorted(reagents_payload):
+                r = reagents_payload[well][0]
+                print(f"    {well}: {r['name']} ({r['volume']})")
+            return barcode
+
+        elapsed = int(time.time() - start)
+        print(f"    [{elapsed}s] No empty {AGD_PLATE_TYPE} found. Retrying in {REAGENT_PLATE_POLL_INTERVAL}s...")
+        time.sleep(REAGENT_PLATE_POLL_INTERVAL)
+
+    print(f"  TIMEOUT: No {AGD_PLATE_TYPE} found within {REAGENT_PLATE_POLL_TIMEOUT // 60} minutes.")
+    return None
+
+
+def update_reagent_plate_volumes(state: dict, transfer_array: list, novel_bio_well: str, nm_cells_volume: float):
+    """Deduct this iteration's consumed volumes from the tracked reagent plate volumes.
+
+    Reads state["reagent_plate_volumes"], subtracts what was consumed, updates
+    state in place, and calls set_reagents_by_well so the MCP stays in sync.
+    """
+    barcode = state.get("reagent_plate_barcode")
+    if not barcode:
+        return
+
+    tracked = dict(state.get("reagent_plate_volumes", {}))
+
+    # Compute volumes consumed per source well this iteration
+    consumed: dict[str, float] = {}
+    for src, _, vol in transfer_array:
+        consumed[src] = consumed.get(src, 0.0) + float(vol)
+    if nm_cells_volume > 0:
+        consumed[NM_CELLS_REAGENT_WELL] = consumed.get(NM_CELLS_REAGENT_WELL, 0.0) + nm_cells_volume
+
+    # Deduct and warn on unexpected negatives
+    for well, used in consumed.items():
+        prev = tracked.get(well, 0.0)
+        tracked[well] = max(0.0, prev - used)
+        status = f"{prev:.0f} → {tracked[well]:.0f} uL"
+        if prev > 0 and prev - used < 0:
+            print(f"  WARNING: {well} over-consumed ({prev:.0f} uL available, {used:.0f} uL drawn)")
+        else:
+            print(f"  Reagent {well}: consumed {used:.0f} uL  ({status})")
+
+    # Build full reagents_by_well payload for set_reagents_by_well
+    # Map well -> reagent name
+    well_to_name = {v: k for k, v in REAGENT_WELLS.items()}
+    well_to_name[NM_CELLS_REAGENT_WELL] = NM_CELLS_REAGENT_NAME
+    for w in NOVEL_BIO_WELLS:
+        well_to_name[w] = "Novel_Bio"
+
+    reagents_payload = {}
+    for well, vol in tracked.items():
+        name = well_to_name.get(well, well)
+        reagents_payload[well] = [{"name": name, "volume": f"{int(vol)} uL"}]
+
+    try:
+        _mcp_client.call_tool(
+            "set_reagents_by_well",
+            {"plate_barcode": barcode, "reagents_by_well": reagents_payload},
+        )
+        print(f"  Reagent plate {barcode} volumes updated in MCP.")
+    except Exception as e:
+        print(f"  WARNING: Could not update reagent volumes in MCP: {e}")
+
+    state["reagent_plate_volumes"] = tracked
 
 
 # =============================================================================
@@ -1157,6 +1389,11 @@ def run_iteration(
     # Log full iteration with results
     log_iteration(iteration, center, transfer_array, od_results, gradient, new_composition, alpha)
 
+    # Update reagent plate volume tracking in MCP
+    seed_nm_vol = seed_params["nm_cells_volume"] if seed_params else 0
+    print(f"\n  Updating reagent plate volumes...")
+    update_reagent_plate_volumes(state, transfer_array, novel_bio_well, seed_nm_vol)
+
     # Check convergence: no perturbation improved on center
     any_improvement = any(
         sum(od_results["perturbed_ods"][name]) / 2 > od_results["center_od"]
@@ -1243,6 +1480,22 @@ def run_experiment(
         wells_str = ", ".join(wells_needed) + " (WARNING: may not be enough!)"
     print(f"\n  Novel Bio estimate: ~{nb_per_iter:.0f} uL/iter × {remaining_iters} remaining = ~{nb_total_estimate:.0f} uL total")
     print(f"  Already consumed: {nb_used_so_far:.0f} uL  |  Wells needed: {wells_str}")
+
+    # Reagent plate setup: print instructions, then find and configure the plate via MCP
+    if not dry_run:
+        if not state.get("reagent_plate_barcode"):
+            print_reagent_plate_setup(state)
+            reagent_barcode = find_and_setup_reagent_plate(state)
+            if reagent_barcode:
+                state["reagent_plate_barcode"] = reagent_barcode
+                # Initialize volume tracking from the fill plan
+                fill = _reagent_plate_fill_plan(state)
+                state["reagent_plate_volumes"] = {w: float(v) for w, v in fill.items()}
+                save_state(state)
+            else:
+                print("  WARNING: Proceeding without reagent plate tracking.")
+        else:
+            print(f"\n  Resuming with reagent plate: {state['reagent_plate_barcode']}")
 
     while not state["converged"]:
         try:

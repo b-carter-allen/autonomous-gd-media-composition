@@ -25,8 +25,9 @@ DEST_ROW = "A"
 # Seed well on experiment plate for this round (A1=round 1, B1=round 2, ...)
 SEED_WELL = "A1"
 
-# Wells to seed with cells from the seed well (cols 3-12, skip col 2 = neg control)
-SEED_DEST_WELLS = ["A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12"]
+# Wells to seed with cells from the seed well (cols 3-10 only)
+# Col 2 skipped: empty buffer. Cols 11-12 skipped: col 11 = empty buffer, col 12 = neg control.
+SEED_DEST_WELLS = ["A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10"]
 
 # Next seed well to warm up with NM+Cells (B1=round 1, C1=round 2, ...)
 # Ignored when NM_CELLS_VOLUME = 0 (round 8)
@@ -51,9 +52,9 @@ REAGENT_TYPE = "AGD Stock Plate"
 # Tip consumption for combined routine
 # Reagent transfers: varies by source grouping (reuse_tips_for_same_source)
 # + 1 P200 for seed well mixing
-# + 1 P50 for seeding 10 wells (reused)
+# + 1 P50 per seed dest well (unique tip per well, 8 wells = 8 tips)
 # + 1 P1000 for NM+Cells warmup (if nm_cells_volume > 0)
-P50_TIPS_TO_CONSUME = 5  # 4 reagent + 1 seeding
+P50_TIPS_TO_CONSUME = 5  # reagent tips + 8 seeding (set by orchestrator)
 P200_TIPS_TO_CONSUME = 1  # 1 seed well mixing
 P1000_TIPS_TO_CONSUME = 1  # 1 NM+Cells warmup (0 for round 8)
 
@@ -96,12 +97,16 @@ def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinition
     # Compute well lists for absorbance measurements
     # -------------------------------------------------------------------------
 
+    # Filled experimental columns: 3-10 (experiments) + 12 (neg control)
+    # Cols 2 and 11 are empty buffers — excluded from absorbance measurements.
+    exp_cols = list(range(3, 11)) + [12]
+
     # Pre-iteration wells: seed wells + prior experimental rows
     pre_wells = []
     for i in range(round_number):
         pre_wells.append(f"{rows[i]}1")  # seed wells
     for r in range(row_index):
-        for col in range(2, 13):
+        for col in exp_cols:
             pre_wells.append(f"{rows[r]}{col}")  # prior row experimental wells
 
     # Post-iteration wells: all seed wells (incl. next) + all exp rows (incl. current)
@@ -110,7 +115,7 @@ def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinition
     for i in range(seed_count):
         post_wells.append(f"{rows[i]}1")
     for r in range(row_index + 1):
-        for col in range(2, 13):
+        for col in exp_cols:
             post_wells.append(f"{rows[r]}{col}")
 
     # === PHASE 1: PRE-ITERATION ABSORBANCE ===

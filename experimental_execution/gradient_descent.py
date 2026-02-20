@@ -90,19 +90,22 @@ REAGENT_WELLS = {
 SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "DiH2O"]
 
 # Plate layout: column -> purpose (row-wise iteration)
+# Cols 2 and 11 are intentionally empty (buffer wells) to isolate:
+#   - seed well (col 1) from experiments (cols 3-10)
+#   - experiments (cols 3-10) from negative control (col 12)
 COL_LABELS = {
     1: "seed",
-    2: "neg_control",
+    2: "empty_buffer",
     3: "pos_control",
     4: "center",
     5: "glucose_rep1",
     6: "glucose_rep2",
-    7: "nacl_rep1",
-    8: "nacl_rep2",
-    9: "mgso4_rep1",
-    10: "mgso4_rep2",
-    11: "extra1",
-    12: "extra2",
+    7: "mops_rep1",
+    8: "mops_rep2",
+    9: "diH2O_rep1",
+    10: "diH2O_rep2",
+    11: "empty_buffer",
+    12: "neg_control",
 }
 
 # Perturbation column pairs: (col1, col2, supplement_name)
@@ -239,25 +242,23 @@ def generate_transfer_array(
     row_letter: str,
     delta: int = DELTA_UL,
 ) -> list:
-    """Generate a transfer array for one iteration (11 wells in 1 row).
+    """Generate a transfer array for one iteration (9 filled wells in 1 row).
 
     Returns: [[source_well, dest_well, volume_uL], ...]
 
     Column layout (all in the same row):
       Col 1:  Seed well (pre-loaded, not part of transfer array)
-      Col 2:  Negative control (200 uL Novel_Bio, no cells)
+      Col 2:  Empty buffer (no transfer — isolates seed well from experiments)
       Col 3:  Positive control (180 uL Novel_Bio, cells added by seeding)
       Col 4:  Center point (current best recipe)
       Col 5-6:  +delta Supplement 1 (2 reps)
       Col 7-8:  +delta Supplement 2 (2 reps)
       Col 9-10: +delta Supplement 3 (2 reps)
-      Col 11-12: Extra wells (same as center for now)
+      Col 11: Empty buffer (no transfer — isolates experiments from neg control)
+      Col 12: Negative control (200 uL Novel_Bio, no cells)
     """
     transfers = []
     row = row_letter
-
-    # Col 2: Negative control — 200 uL Novel_Bio (no cells seeded)
-    transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}2", WELL_VOLUME_UL])
 
     # Col 3: Positive control — 180 uL Novel_Bio (cells added by seeding step)
     transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}3", REAGENT_VOLUME_UL])
@@ -282,13 +283,8 @@ def generate_transfer_array(
                 if perturbed[name] > 0:
                     transfers.append([REAGENT_WELLS[name], f"{row}{col}", perturbed[name]])
 
-    # Cols 11-12: Extra wells (duplicate center for additional data)
-    for col in (11, 12):
-        if novel_bio_center > 0:
-            transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}{col}", novel_bio_center])
-        for name in SUPPLEMENT_NAMES:
-            if center[name] > 0:
-                transfers.append([REAGENT_WELLS[name], f"{row}{col}", center[name]])
+    # Col 12: Negative control — 200 uL Novel_Bio (no cells seeded)
+    transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}12", WELL_VOLUME_UL])
 
     # Sort: Novel_Bio first (reuse tip), then supplements in reverse order
     source_order = [
@@ -397,10 +393,12 @@ def get_seed_params(iteration: int) -> dict:
 
     Row-wise layout: each iteration uses one row (A-H).
     Seed well is column 1 of the iteration's row.
-    Cells are seeded into cols 3-12 (skip col 2 = negative control).
+    Cells are seeded into cols 3-10 only:
+      - Col 2 skipped: empty buffer (isolates seed well from experiments)
+      - Cols 11-12 skipped: col 11 is empty buffer, col 12 is neg control (no cells)
 
-    Iteration 1: seed from A1, experiments in row A (A2-A12), warm up B1
-    Iteration 8: seed from H1, experiments in row H (H2-H12), no warmup
+    Iteration 1: seed from A1, experiments in row A, warm up B1
+    Iteration 8: seed from H1, experiments in row H, no warmup
     """
     row = ROWS[iteration - 1]
     seed_well = f"{row}1"
@@ -408,8 +406,8 @@ def get_seed_params(iteration: int) -> dict:
     next_seed_well = f"{ROWS[iteration]}1" if not is_last else "B1"  # dummy for last
     nm_cells_volume = 0 if is_last else 220
 
-    # Wells to seed with cells: cols 3-12 (skip col 2 = neg control)
-    seed_dest_wells = [f"{row}{col}" for col in range(3, 13)]
+    # Wells to seed with cells: cols 3-10 (skip col 2 = buffer, skip cols 11-12 = buffer/neg ctrl)
+    seed_dest_wells = [f"{row}{col}" for col in range(3, 11)]
 
     return {
         "seed_well": seed_well,
@@ -594,7 +592,9 @@ def write_workflow_definition(
         replace_const("SEED_DEST_WELLS", json.dumps(seed_params["seed_dest_wells"]))
 
     # Tip consumption — add extras for combined routine (seed mixing, seeding, NM warmup)
-    p50_extra = 1 if seed_params else 0   # +1 P50 for seeding (reused for 10 wells)
+    # Seeding uses a unique P50 tip per destination well (cols 3-10 = 8 wells)
+    n_seed_wells = len(seed_params["seed_dest_wells"]) if seed_params else 0
+    p50_extra = n_seed_wells   # unique tip per seed dest well
     p200_extra = 1 if seed_params else 0  # +1 P200 for seed well mixing
     p1000_count = 1 if seed_params and seed_params["nm_cells_volume"] > 0 else 0
     reagent_extra = 1 if seed_params and seed_params["nm_cells_volume"] > 0 else 0
@@ -784,8 +784,8 @@ def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
     if not datasets:
         raise RuntimeError(f"No datasets found for plate {plate_barcode}")
 
-    # Filter datasets that have data for our target row wells (cols 2-12)
-    target_wells = [f"{row_letter}{col}" for col in range(2, 13)]
+    # Target wells: cols 3-10 (experiments) + col 12 (neg control). Cols 2 and 11 are empty.
+    target_wells = [f"{row_letter}{col}" for col in list(range(3, 11)) + [12]]
     row_readings = {}
     for ds in datasets:
         obs = ds.get("observations_by_well", {})
@@ -811,7 +811,7 @@ def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
 
     baseline = {}
     endpoint = {}
-    for col in range(2, 13):
+    for col in list(range(3, 11)) + [12]:
         well = f"{row_letter}{col}"
         baseline[well] = earliest_well_data.get(well, 0.0)
         endpoint[well] = latest_well_data.get(well, 0.0)
@@ -831,19 +831,19 @@ def parse_od_results(absorbance_results: dict, row_letter: str) -> dict:
     for varying initial cell densities across wells.
 
     Row-wise layout:
-      Col 2: Negative control (no cells)
-      Col 3: Positive control (cells in plain media)
-      Col 4: Center point
+      Col 2:  Empty buffer (ignored)
+      Col 3:  Positive control (cells in plain media)
+      Col 4:  Center point
       Cols 5-10: Perturbation wells (3 supplements x 2 reps)
-      Cols 11-12: Extra wells
+      Col 11: Empty buffer (ignored)
+      Col 12: Negative control (no cells)
 
     Returns:
         {
-            "neg_control_od": float,   # delta OD for negative control (no cells)
-            "control_od": float,       # delta OD for positive control
-            "center_od": float,        # delta OD for center well
+            "neg_control_od": float,   # delta OD for negative control (no cells, col 12)
+            "control_od": float,       # delta OD for positive control (col 3)
+            "center_od": float,        # delta OD for center well (col 4)
             "perturbed_ods": {supplement: [rep1_delta, rep2_delta]},
-            "extra_ods": [extra1_delta, extra2_delta],
             "abs_control_od": float,   # absolute endpoint (for logging)
             "abs_center_od": float,    # absolute endpoint (for logging)
         }
@@ -855,7 +855,7 @@ def parse_od_results(absorbance_results: dict, row_letter: str) -> dict:
     def delta(well):
         return endpoint.get(well, 0.0) - baseline.get(well, 0.0)
 
-    neg_control_delta = delta(f"{row}2")
+    neg_control_delta = delta(f"{row}12")
     pos_control_delta = delta(f"{row}3")
     center_delta = delta(f"{row}4")
 
@@ -863,14 +863,11 @@ def parse_od_results(absorbance_results: dict, row_letter: str) -> dict:
     for col1, col2, supplement in PERTURBATION_COLS:
         perturbed_deltas[supplement] = [delta(f"{row}{col1}"), delta(f"{row}{col2}")]
 
-    extra_deltas = [delta(f"{row}11"), delta(f"{row}12")]
-
     return {
         "neg_control_od": neg_control_delta,
         "control_od": pos_control_delta,
         "center_od": center_delta,
         "perturbed_ods": perturbed_deltas,
-        "extra_ods": extra_deltas,
         "abs_control_od": endpoint.get(f"{row}3", 0.0),
         "abs_center_od": endpoint.get(f"{row}4", 0.0),
     }

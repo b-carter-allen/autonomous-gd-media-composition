@@ -820,9 +820,6 @@ def write_workflow_definition(
 
     nb_well = novel_bio_well or REAGENT_WELLS["Novel_Bio"]
     tip_counts = compute_tip_consumption(transfer_array, novel_bio_well=nb_well)
-    # Reagent well counter: count supplement source wells only (exclude Novel Bio,
-    # which is tracked separately via novel_bio_used_ul in state).
-    supplement_wells_used = len(set(t[0] for t in transfer_array) - {nb_well})
 
     def replace_const(name: str, value):
         """Replace a module-level constant in the template by name."""
@@ -851,12 +848,12 @@ def write_workflow_definition(
     p50_extra = n_seed_wells   # unique tip per seed dest well
     p200_extra = 1 if seed_params else 0  # +1 P200 for seed well mixing
     p1000_count = 1 if seed_params and seed_params["nm_cells_volume"] > 0 else 0
-    reagent_extra = 1 if seed_params and seed_params["nm_cells_volume"] > 0 else 0
 
     replace_const("P50_TIPS_TO_CONSUME", str(tip_counts["p50"] + p50_extra))
     replace_const("P200_TIPS_TO_CONSUME", str(tip_counts["p200"] + p200_extra))
     replace_const("P1000_TIPS_TO_CONSUME", str(tip_counts.get("p1000", 0) + p1000_count))
-    replace_const("REAGENT_WELLS_TO_CONSUME", str(supplement_wells_used + reagent_extra))
+    # Fixed 3 wells consumed per iteration: 24-well plate / 8 iterations = 3 per run
+    replace_const("REAGENT_WELLS_TO_CONSUME", str(24 // MAX_ITERATIONS))
 
     # Write iteration-specific file
     iter_dir = DATA_DIR / f"iteration_{iteration}"

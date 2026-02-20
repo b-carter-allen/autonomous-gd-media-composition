@@ -1,3 +1,5 @@
+import json
+
 from src.platform.core_domain.units import Time
 from src.workflows.workflow_definition_dsl.workflow_definition_descriptor import (
     MoreThanConstraint,
@@ -132,7 +134,7 @@ def build_definition(plate_barcode: str = "default_plate") -> WorkflowDefinition
             "reagent_type": REAGENT_TYPE,
             "transfer_array": TRANSFER_ARRAY,
             "seed_well": SEED_WELL,
-            "seed_dest_wells": SEED_DEST_WELLS,
+            "seed_dest_wells": json.dumps(SEED_DEST_WELLS) if isinstance(SEED_DEST_WELLS, list) else SEED_DEST_WELLS,
             "seed_transfer_volume": SEED_TRANSFER_VOLUME,
             "nm_cells_source_well": NM_CELLS_SOURCE_WELL,
             "nm_cells_volume": NM_CELLS_VOLUME,

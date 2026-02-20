@@ -464,7 +464,10 @@ def composition_bar(composition: dict) -> go.Figure:
 # Main app
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="GD Media Optimization", layout="wide", page_icon="🧫")
+try:
+    st.set_page_config(page_title="GD Media Optimization", layout="wide", page_icon="🧫")
+except Exception:
+    pass
 
 # Custom CSS
 st.markdown(

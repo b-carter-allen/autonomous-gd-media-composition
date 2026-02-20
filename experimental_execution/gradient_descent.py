@@ -54,14 +54,27 @@ load_dotenv()
 # =============================================================================
 
 # Workcell connection
-WORKCELL_HOST = os.getenv("WORKCELL_HOST", "192.168.68.55")
-WORKCELL_PORT = int(os.getenv("WORKCELL_PORT", "8080"))
-WORKCELL_API_BASE = f"http://{WORKCELL_HOST}:{WORKCELL_PORT}"
+# Set WORKCELL_BASE_URL to override the full base URL (e.g. for Tailscale/HTTPS).
+# Otherwise falls back to http://{WORKCELL_HOST}:{WORKCELL_PORT}.
+_host = os.getenv("WORKCELL_HOST", "192.168.68.55")
+_port = int(os.getenv("WORKCELL_PORT", "8080"))
+WORKCELL_API_BASE = os.getenv("WORKCELL_BASE_URL", f"http://{_host}:{_port}")
 
 # API request headers (ClientIdentifierMiddleware requires desktop-frontend)
+_auth_header = os.getenv("WORKCELL_AUTH_HEADER", "")
 API_HEADERS = {
     "Content-Type": "application/json",
     "X-Monomer-Client": "desktop-frontend",
+    **( {"Authorization": _auth_header} if _auth_header else {} ),
+}
+
+# Backend MCP connection (for fetching absorbance observations)
+BACKEND_MCP_URL = os.getenv("BACKEND_MCP_URL", "https://backend-staging.monomerbio.com/mcp")
+_backend_auth = os.getenv("BACKEND_AUTH_HEADER", _auth_header)
+BACKEND_MCP_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    **( {"Authorization": _backend_auth} if _backend_auth else {} ),
 }
 
 # Reagent plate well map (24-well deep well, modeled as 96-well in the system)
@@ -693,53 +706,96 @@ def _get_plate_uuid(plate_barcode: str) -> str:
     raise RuntimeError(f"Plate '{plate_barcode}' not found on workcell")
 
 
-def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
-    """Fetch OD600 readings for a plate: both baseline (earliest) and endpoint (latest).
+def _mcp_call(tool_name: str, arguments: dict) -> dict:
+    """Call a tool on the backend MCP server. Returns the structured result."""
+    # Initialize session
+    init_resp = requests.post(
+        BACKEND_MCP_URL,
+        headers=BACKEND_MCP_HEADERS,
+        json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "gd-daemon", "version": "1.0"},
+            },
+        },
+        timeout=15,
+    )
+    init_resp.raise_for_status()
+    session_id = init_resp.headers.get("mcp-session-id")
+    if not session_id:
+        raise RuntimeError("Backend MCP did not return a session ID")
 
-    Queries the datasets REST API (camelCase response), filters by plate UUID
-    and OD600 wavelength, and extracts well values for the target row.
+    session_headers = {**BACKEND_MCP_HEADERS, "mcp-session-id": session_id}
+
+    # Send initialized notification
+    requests.post(
+        BACKEND_MCP_URL,
+        headers=session_headers,
+        json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        timeout=5,
+    )
+
+    # Call the tool
+    tool_resp = requests.post(
+        BACKEND_MCP_URL,
+        headers=session_headers,
+        json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        },
+        timeout=30,
+    )
+    tool_resp.raise_for_status()
+
+    # Parse SSE response
+    for line in tool_resp.text.splitlines():
+        if line.startswith("data:"):
+            data = json.loads(line[5:].strip())
+            if "error" in data:
+                raise RuntimeError(f"MCP tool error: {data['error']}")
+            structured = data.get("result", {}).get("structuredContent", {}).get("result")
+            if structured is not None:
+                return structured
+            # Fall back to parsing text content
+            content = data.get("result", {}).get("content", [])
+            for item in content:
+                if item.get("type") == "text":
+                    return json.loads(item["text"])
+    raise RuntimeError(f"No result from MCP tool {tool_name}")
+
+
+def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
+    """Fetch OD600 readings for a plate via the backend MCP.
+
+    Uses get_plate_observations to get all datasets for the plate, filters
+    to datasets containing target row wells, then returns earliest (baseline)
+    and latest (endpoint) readings.
 
     Returns: {
-        "baseline": {well: od600_value},   # First reading (pre-growth)
+        "baseline": {well: od600_value},   # First reading post-seeding
         "endpoint": {well: od600_value},   # Latest reading (post-growth)
     }
     """
-    plate_uuid = _get_plate_uuid(plate_barcode)
+    result = _mcp_call("get_plate_observations", {"plate_name": plate_barcode, "limit": 500})
 
-    # Fetch all datasets, ordered newest first
-    resp = requests.get(
-        f"{WORKCELL_API_BASE}/api/datasets/",
-        headers=API_HEADERS,
-        params={"verbose": "1", "ordering": "-createdAt"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    datasets = data.get("results", data) if isinstance(data, dict) else data
+    datasets = result.get("datasets", [])
+    if not datasets:
+        raise RuntimeError(f"No datasets found for plate {plate_barcode}")
 
-    # Filter for OD600 datasets matching our plate UUID
-    absorbance_datasets = []
-    for ds in datasets:
-        meta = ds.get("metadata", {})
-        rm = meta.get("resultMetadata", {})
-        pm = meta.get("plateMetadata", {})
-        if rm.get("measurementWavelength") == 600 and pm.get("uuid") == plate_uuid:
-            absorbance_datasets.append(ds)
-
-    if not absorbance_datasets:
-        raise RuntimeError(f"No OD600 datasets found for plate {plate_barcode}")
-
-    # Collect timestamps that have data for our target row wells.
-    # Pre-absorbance readings cover prior rows only (current row is empty),
-    # so we filter to timestamps where at least one target well has a nonzero value.
+    # Filter datasets that have data for our target row wells (cols 2-12)
     target_wells = [f"{row_letter}{col}" for col in range(2, 13)]
     row_readings = {}
-    for ds in absorbance_datasets:
-        sd = ds.get("structuredData", {})
-        results = sd.get("resultsByWell", {})
-        for ts, wells in results.items():
-            if any(wells.get(w) for w in target_wells):
-                row_readings[ts] = wells
+    for ds in datasets:
+        obs = ds.get("observations_by_well", {})
+        if any(w in obs for w in target_wells):
+            ts = ds["timestamp"]
+            row_readings[ts] = {
+                well: float(data["absorbance"])
+                for well, data in obs.items()
+                if data.get("absorbance") is not None
+            }
 
     if not row_readings:
         raise RuntimeError(
@@ -753,13 +809,12 @@ def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
     print(f"    Row {row_letter} readings: {sorted_timestamps[0]} -> {sorted_timestamps[-1]} "
           f"({len(sorted_timestamps)} readings)")
 
-    # Extract the 11 wells in our target row (cols 2-12) for both timepoints
     baseline = {}
     endpoint = {}
     for col in range(2, 13):
         well = f"{row_letter}{col}"
-        baseline[well] = float(earliest_well_data.get(well, 0.0))
-        endpoint[well] = float(latest_well_data.get(well, 0.0))
+        baseline[well] = earliest_well_data.get(well, 0.0)
+        endpoint[well] = latest_well_data.get(well, 0.0)
 
     return {"baseline": baseline, "endpoint": endpoint}
 

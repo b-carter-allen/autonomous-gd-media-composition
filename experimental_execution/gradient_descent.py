@@ -83,8 +83,25 @@ REAGENT_WELLS = {
     "Glucose_100mg_mL": "A1",
     "MOPS_1M": "B1",
     "DiH2O": "C1",
-    "Novel_Bio": "D1",
+    "Novel_Bio": "D1",  # Starting well; switches to D2, D3... as volume is consumed
 }
+
+# Novel Bio wells used sequentially as each fills. Fill each to NOVEL_BIO_WELL_CAPACITY_UL.
+# The 24-well deep well plate holds 10.4 mL/well; 8000 uL is a safe fill target (~77%).
+NOVEL_BIO_WELLS = ["D1", "D2", "D3", "D4"]
+NOVEL_BIO_WELL_CAPACITY_UL = 8000  # uL of Novel Bio to load per well
+
+
+def get_novel_bio_well(cumulative_ul: float) -> str:
+    """Return which Novel Bio well to use based on cumulative volume consumed so far."""
+    well_index = int(cumulative_ul // NOVEL_BIO_WELL_CAPACITY_UL)
+    if well_index >= len(NOVEL_BIO_WELLS):
+        raise RuntimeError(
+            f"Novel Bio exhausted: {cumulative_ul:.0f} uL used across "
+            f"{len(NOVEL_BIO_WELLS)} wells x {NOVEL_BIO_WELL_CAPACITY_UL} uL = "
+            f"{len(NOVEL_BIO_WELLS) * NOVEL_BIO_WELL_CAPACITY_UL} uL total capacity."
+        )
+    return NOVEL_BIO_WELLS[well_index]
 
 # Reagent names in order (matches cols 5/6, 7/8, 9/10)
 SUPPLEMENT_NAMES = ["Glucose_100mg_mL", "MOPS_1M", "DiH2O"]
@@ -175,6 +192,7 @@ def load_state() -> dict:
         "no_improvement_count": 0,
         "converged": False,
         "history": [],
+        "novel_bio_used_ul": 0.0,
     }
 
 
@@ -241,6 +259,7 @@ def generate_transfer_array(
     center: dict,
     row_letter: str,
     delta: int = DELTA_UL,
+    novel_bio_well: str = None,
 ) -> list:
     """Generate a transfer array for one iteration (9 filled wells in 1 row).
 
@@ -257,16 +276,19 @@ def generate_transfer_array(
       Col 11: Empty buffer (no transfer — isolates experiments from neg control)
       Col 12: Negative control (200 uL Novel_Bio, no cells)
     """
+    if novel_bio_well is None:
+        novel_bio_well = REAGENT_WELLS["Novel_Bio"]
+
     transfers = []
     row = row_letter
 
     # Col 3: Positive control — 180 uL Novel_Bio (cells added by seeding step)
-    transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}3", REAGENT_VOLUME_UL])
+    transfers.append([novel_bio_well, f"{row}3", REAGENT_VOLUME_UL])
 
     # Col 4: Center point
     novel_bio_center = compute_novel_bio(center)
     if novel_bio_center > 0:
-        transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}4", novel_bio_center])
+        transfers.append([novel_bio_well, f"{row}4", novel_bio_center])
     for name in SUPPLEMENT_NAMES:
         if center[name] > 0:
             transfers.append([REAGENT_WELLS[name], f"{row}4", center[name]])
@@ -278,17 +300,17 @@ def generate_transfer_array(
 
         for col in (col1, col2):
             if novel_bio_pert > 0:
-                transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}{col}", novel_bio_pert])
+                transfers.append([novel_bio_well, f"{row}{col}", novel_bio_pert])
             for name in SUPPLEMENT_NAMES:
                 if perturbed[name] > 0:
                     transfers.append([REAGENT_WELLS[name], f"{row}{col}", perturbed[name]])
 
     # Col 12: Negative control — 200 uL Novel_Bio (no cells seeded)
-    transfers.append([REAGENT_WELLS["Novel_Bio"], f"{row}12", WELL_VOLUME_UL])
+    transfers.append([novel_bio_well, f"{row}12", WELL_VOLUME_UL])
 
-    # Sort: Novel_Bio first (reuse tip), then supplements in reverse order
+    # Sort: Novel_Bio well first (reuse tip), then supplements in reverse order
     source_order = [
-        REAGENT_WELLS["Novel_Bio"],
+        novel_bio_well,
         REAGENT_WELLS["DiH2O"],
         REAGENT_WELLS["MOPS_1M"],
         REAGENT_WELLS["Glucose_100mg_mL"],
@@ -299,17 +321,19 @@ def generate_transfer_array(
     return transfers
 
 
-# Novel_Bio well is the only one that reuses tips
-REUSE_TIP_SOURCE_WELLS = [REAGENT_WELLS["Novel_Bio"]]
+def novel_bio_volume_for_array(transfer_array: list, novel_bio_well: str) -> float:
+    """Sum total Novel Bio volume drawn from novel_bio_well in a transfer array."""
+    return sum(float(vol) for src, _, vol in transfer_array if src == novel_bio_well)
 
 
-def compute_tip_consumption(transfer_array: list) -> dict:
+def compute_tip_consumption(transfer_array: list, novel_bio_well: str = None) -> dict:
     """Compute tip consumption for hybrid tip mode.
 
-    Novel_Bio (D1): 1 tip reused for all transfers (grouped by pipette type).
+    Novel_Bio well: 1 tip reused for all transfers (grouped by pipette type).
     All other source wells: 1 new tip per transfer.
     """
-    reuse_set = set(REUSE_TIP_SOURCE_WELLS)
+    nb_well = novel_bio_well or REAGENT_WELLS["Novel_Bio"]
+    reuse_set = {nb_well}
 
     # Reuse wells: 1 tip per unique (source_well, pipette_type)
     reuse_by_pipette = {"p50": set(), "p200": set(), "p1000": set()}
@@ -553,6 +577,7 @@ def write_workflow_definition(
     row_letter: str,
     iteration: int,
     seed_params: dict | None = None,
+    novel_bio_well: str = None,
 ) -> Path:
     """Write an iteration-specific workflow definition file.
 
@@ -561,14 +586,11 @@ def write_workflow_definition(
     """
     template = WORKFLOW_TEMPLATE_PATH.read_text()
 
-    tip_counts = compute_tip_consumption(transfer_array)
-    # Reagent well counter: the 24-well reagent plate tracks usage via this
-    # count. Each iteration "consumes" N wells — the plate allows 8 uses
-    # (24 wells / 3 supplements = 8). Only count supplement wells (exclude
-    # Novel_Bio D1 which is not a consumed reagent slot).
-    supplement_wells_used = len(
-        set(t[0] for t in transfer_array) - {REAGENT_WELLS["Novel_Bio"]}
-    )
+    nb_well = novel_bio_well or REAGENT_WELLS["Novel_Bio"]
+    tip_counts = compute_tip_consumption(transfer_array, novel_bio_well=nb_well)
+    # Reagent well counter: count supplement source wells only (exclude Novel Bio,
+    # which is tracked separately via novel_bio_used_ul in state).
+    supplement_wells_used = len(set(t[0] for t in transfer_array) - {nb_well})
 
     def replace_const(name: str, value):
         """Replace a module-level constant in the template by name."""
@@ -1025,14 +1047,30 @@ def run_iteration(
 
     # --- Fresh start: generate transfer array + workflow ---
     if resume_phase is None:
-        # Step 1: Generate transfer array
+        # Step 1: Determine Novel Bio well based on cumulative volume consumed so far
+        novel_bio_used_ul = state.get("novel_bio_used_ul", 0.0)
+        novel_bio_well = get_novel_bio_well(novel_bio_used_ul)
+        prev_well = get_novel_bio_well(max(0, novel_bio_used_ul - 1)) if novel_bio_used_ul > 0 else novel_bio_well
+        if novel_bio_well != prev_well:
+            print(f"\n  Novel Bio well switch: {prev_well} -> {novel_bio_well} "
+                  f"({novel_bio_used_ul:.0f} uL consumed)")
+        elif novel_bio_used_ul > 0:
+            remaining = NOVEL_BIO_WELL_CAPACITY_UL - (novel_bio_used_ul % NOVEL_BIO_WELL_CAPACITY_UL)
+            print(f"  Novel Bio: using {novel_bio_well} "
+                  f"({novel_bio_used_ul:.0f} uL used, ~{remaining:.0f} uL remaining in well)")
+
+        # Step 2: Generate transfer array
         # Perturbation delta scales with alpha so we test the actual step size
         perturbation_delta = max(1, int(alpha * DELTA_UL))
-        transfer_array = generate_transfer_array(center, row_letter, delta=perturbation_delta)
+        transfer_array = generate_transfer_array(
+            center, row_letter, delta=perturbation_delta, novel_bio_well=novel_bio_well
+        )
+        nb_this_iter = novel_bio_volume_for_array(transfer_array, novel_bio_well)
 
-        # Step 2: Write workflow definition
+        # Step 3: Write workflow definition
         workflow_path = write_workflow_definition(
-            transfer_array, row_letter, iteration, seed_params
+            transfer_array, row_letter, iteration, seed_params,
+            novel_bio_well=novel_bio_well,
         )
         print(f"  Workflow definition: {workflow_path}")
 
@@ -1069,6 +1107,10 @@ def run_iteration(
             transfer_array = json.loads(ta_path.read_text())
         else:
             transfer_array = []
+        # Recompute Novel Bio volume for state tracking
+        novel_bio_used_ul = state.get("novel_bio_used_ul", 0.0)
+        novel_bio_well = get_novel_bio_well(novel_bio_used_ul)
+        nb_this_iter = novel_bio_volume_for_array(transfer_array, novel_bio_well)
 
     # --- Poll for completion (fresh or resumed) ---
     if resume_phase in (None, "poll"):
@@ -1132,6 +1174,7 @@ def run_iteration(
     state["current_composition"] = new_composition
     state["alpha"] = alpha
     state["prev_center_od"] = od_results["center_od"]
+    state["novel_bio_used_ul"] = state.get("novel_bio_used_ul", 0.0) + nb_this_iter
 
     if state["best_od"] is None or od_results["center_od"] > state["best_od"]:
         state["best_od"] = od_results["center_od"]
@@ -1182,6 +1225,24 @@ def run_experiment(
     print(f"  Starting from iteration: {state['current_iteration'] + 1}")
     print(f"  Current composition: {state['current_composition']}")
     print(f"  Max iterations: {MAX_ITERATIONS}")
+
+    # Pre-run Novel Bio volume estimate
+    remaining_iters = MAX_ITERATIONS - state["current_iteration"]
+    nb_used_so_far = state.get("novel_bio_used_ul", 0.0)
+    sample_row = ROWS[state["current_iteration"]]
+    sample_transfer = generate_transfer_array(state["current_composition"], sample_row, novel_bio_well=NOVEL_BIO_WELLS[0])
+    nb_per_iter = novel_bio_volume_for_array(sample_transfer, NOVEL_BIO_WELLS[0])
+    nb_total_estimate = nb_per_iter * remaining_iters
+    first_well_idx = int(nb_used_so_far // NOVEL_BIO_WELL_CAPACITY_UL)
+    last_well_idx = int((nb_used_so_far + nb_total_estimate) // NOVEL_BIO_WELL_CAPACITY_UL)
+    if last_well_idx < len(NOVEL_BIO_WELLS):
+        wells_needed = NOVEL_BIO_WELLS[first_well_idx:last_well_idx + 1]
+        wells_str = ", ".join(wells_needed)
+    else:
+        wells_needed = NOVEL_BIO_WELLS[first_well_idx:]
+        wells_str = ", ".join(wells_needed) + " (WARNING: may not be enough!)"
+    print(f"\n  Novel Bio estimate: ~{nb_per_iter:.0f} uL/iter × {remaining_iters} remaining = ~{nb_total_estimate:.0f} uL total")
+    print(f"  Already consumed: {nb_used_so_far:.0f} uL  |  Wells needed: {wells_str}")
 
     while not state["converged"]:
         try:

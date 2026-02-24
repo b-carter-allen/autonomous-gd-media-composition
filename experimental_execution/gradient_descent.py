@@ -591,7 +591,16 @@ def find_and_setup_reagent_plate(state: dict) -> str | None:
         for plate in (plates if isinstance(plates, list) else []):
             if plate.get("initial_media_type") != AGD_PLATE_TYPE:
                 continue
-            if plate.get("reagents_by_well"):  # already configured — skip
+            # Skip if already configured with real volumes.
+            # A freshly checked-in plate has reagents_by_well auto-populated by the system
+            # with the plate type name and volume=null — treat that as unconfigured.
+            reagents = plate.get("reagents_by_well", {})
+            has_real_volumes = reagents and any(
+                r.get("volume") is not None
+                for entries in reagents.values()
+                for r in entries
+            )
+            if has_real_volumes:
                 continue
 
             barcode = plate["barcode"]
@@ -852,8 +861,10 @@ def write_workflow_definition(
     replace_const("P50_TIPS_TO_CONSUME", str(tip_counts["p50"] + p50_extra))
     replace_const("P200_TIPS_TO_CONSUME", str(tip_counts["p200"] + p200_extra))
     replace_const("P1000_TIPS_TO_CONSUME", str(tip_counts.get("p1000", 0) + p1000_count))
-    # Fixed 3 wells consumed per iteration: 24-well plate / 8 iterations = 3 per run
-    replace_const("REAGENT_WELLS_TO_CONSUME", str(24 // MAX_ITERATIONS))
+    # 0: let Python-side volume tracking own reagent management; consume_wells=3 was
+    # marking A1/B1/C1 as empty in Monomer Desktop after each run, blocking set_reagents_by_well.
+    # The plate still loads via process_items_required (reagent_type tag filter).
+    replace_const("REAGENT_WELLS_TO_CONSUME", "0")
 
     # Write iteration-specific file
     iter_dir = DATA_DIR / f"iteration_{iteration}"
@@ -864,13 +875,14 @@ def write_workflow_definition(
     return output_path
 
 
-def register_workflow(workflow_path: Path, iteration: int) -> int:
+def register_workflow(workflow_path: Path, iteration: int, plate_barcode: str = "") -> int:
     """Register a workflow definition via MCP (upload file + create DB record).
 
     Returns the workflow definition database ID.
     """
     file_name = f"gradient_descent_iteration_r{iteration}.py"
-    workflow_name = f"Gradient Descent Iteration {iteration}"
+    prefix = f"{plate_barcode} - " if plate_barcode else ""
+    workflow_name = f"{prefix}Gradient Descent Iteration {iteration}"
 
     # Step 1: Upload the workflow definition file via MCP
     code_content = workflow_path.read_text()
@@ -1003,7 +1015,10 @@ def _mcp_call(tool_name: str, arguments: dict) -> dict:
     # Parse SSE response
     for line in tool_resp.text.splitlines():
         if line.startswith("data:"):
-            data = json.loads(line[5:].strip())
+            payload = line[5:].strip()
+            if not payload:
+                continue  # heartbeat / keep-alive line
+            data = json.loads(payload)
             if "error" in data:
                 raise RuntimeError(f"MCP tool error: {data['error']}")
             structured = data.get("result", {}).get("structuredContent", {}).get("result")
@@ -1013,7 +1028,15 @@ def _mcp_call(tool_name: str, arguments: dict) -> dict:
             content = data.get("result", {}).get("content", [])
             for item in content:
                 if item.get("type") == "text":
-                    return json.loads(item["text"])
+                    text = (item.get("text") or "").strip()
+                    if not text:
+                        return None  # Tool returned empty/null result
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"MCP tool {tool_name} returned non-JSON text content: {text[:300]!r}"
+                        )
     raise RuntimeError(f"No result from MCP tool {tool_name}")
 
 
@@ -1030,6 +1053,11 @@ def fetch_absorbance_results(plate_barcode: str, row_letter: str) -> dict:
     }
     """
     result = _mcp_call("get_plate_observations", {"plate_name": plate_barcode, "limit": 500})
+    if result is None:
+        raise RuntimeError(
+            f"get_plate_observations returned None for plate '{plate_barcode}'. "
+            "Plate may not exist in the backend DB, or auth token is wrong."
+        )
 
     datasets = result.get("datasets", [])
     if not datasets:
@@ -1313,7 +1341,7 @@ def run_iteration(
 
         # Step 3: Upload + register workflow via MCP
         print(f"\n  Registering workflow...")
-        workflow_def_id = register_workflow(workflow_path, iteration)
+        workflow_def_id = register_workflow(workflow_path, iteration, plate_barcode)
         print(f"  Definition ID: {workflow_def_id}")
 
         # Step 4: Instantiate workflow via MCP (auto-approved if config flag is set)
@@ -1566,6 +1594,172 @@ def print_status():
 
 
 # =============================================================================
+# PREFLIGHT CHECK
+# =============================================================================
+
+
+def print_tiprack_estimates(state: dict):
+    """Print tiprack consumption estimates for the remaining iterations."""
+    remaining = MAX_ITERATIONS - state["current_iteration"]
+    composition = state["current_composition"]
+    nb_well = get_novel_bio_well(state.get("novel_bio_used_ul", 0.0))
+    sample_ta = generate_transfer_array(composition, ROWS[0], novel_bio_well=nb_well)
+    tip_counts = compute_tip_consumption(sample_ta, nb_well)
+    seed_wells = 8  # cols 3-10
+
+    # Per-iteration tip counts (using current composition as proxy)
+    p50_per_iter = tip_counts["p50"] + seed_wells
+    p200_per_iter = tip_counts["p200"] + 1  # +1 for seed well mix
+    p1000_per_iter_mid = tip_counts.get("p1000", 0) + 1   # iters with NM warmup
+    p1000_per_iter_last = tip_counts.get("p1000", 0)       # final iter (no warmup)
+
+    # Totals
+    nm_iters = max(0, remaining - 1)  # all but last get NM warmup
+    p50_total = p50_per_iter * remaining
+    p200_total = p200_per_iter * remaining
+    p1000_total = p1000_per_iter_mid * nm_iters + p1000_per_iter_last
+
+    racks_p50 = -(-p50_total // 96)    # ceiling division
+    racks_p200 = -(-p200_total // 96)
+    racks_p1000 = max(1, -(-p1000_total // 96))
+
+    print(f"\n{'='*60}")
+    print(f"  TIPRACK REQUIREMENTS ({remaining} iterations remaining)")
+    print(f"{'='*60}")
+    print(f"  Per iteration (approx, based on current composition):")
+    print(f"    P50 tips:   ~{p50_per_iter}  ({seed_wells} seeding + {tip_counts['p50']} reagent transfers)")
+    print(f"    P200 tips:  ~{p200_per_iter}  (1 Novel_Bio reuse + 1 mix)")
+    print(f"    P1000 tips: ~{p1000_per_iter_mid} (NM warmup; 0 on final iter)")
+    print(f"")
+    print(f"  Total across {remaining} iterations:")
+    print(f"    P50:   ~{p50_total} tips  →  {racks_p50} rack(s) of 96")
+    print(f"    P200:  ~{p200_total} tips  →  {racks_p200} rack(s) of 96")
+    print(f"    P1000: ~{p1000_total} tips  →  {racks_p1000} rack(s) of 96")
+    print(f"")
+    print(f"  Note: P50 range varies with composition (8-29/iter). Load {racks_p50} racks to be safe.")
+    print(f"{'='*60}\n")
+
+
+def run_preflight(plate_barcode: str):
+    """Run pre-flight checks and print experiment setup info."""
+    import base64
+    import subprocess
+
+    print(f"\n{'='*60}")
+    print(f"  AGD PRE-FLIGHT CHECK")
+    print(f"  Experiment: {plate_barcode}")
+    print(f"{'='*60}\n")
+
+    # --- 1. Auth token check ---
+    all_ok = True
+    env_path = Path(__file__).parent.parent / ".env"
+    token_val = None
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith("BACKEND_AUTH_HEADER=Bearer "):
+                token_val = line.split("Bearer ", 1)[1].strip()
+                break
+    if not token_val:
+        token_val = os.getenv("BACKEND_AUTH_HEADER", "").replace("Bearer ", "").strip()
+
+    if token_val:
+        try:
+            payload = token_val.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload))
+            exp = claims["exp"]
+            now = int(time.time())
+            mins_left = (exp - now) // 60
+            if now > exp:
+                print(f"  [FAIL] Auth token:   EXPIRED ({time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(exp))})")
+                print(f"         Get a new token from Settings → MCP Integration in the Monomer web app")
+                all_ok = False
+            elif mins_left < 120:
+                print(f"  [WARN] Auth token:   valid but expires in {mins_left//60}h {mins_left%60}m — consider refreshing")
+            else:
+                print(f"  [ OK ] Auth token:   valid, expires {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(exp))} ({mins_left//60}h {mins_left%60}m)")
+        except Exception as e:
+            print(f"  [WARN] Auth token:   could not decode ({e})")
+    else:
+        print(f"  [FAIL] Auth token:   not found in {env_path} or BACKEND_AUTH_HEADER env var")
+        all_ok = False
+
+    # --- 2. Workcell MCP connectivity ---
+    try:
+        result = _mcp_client.call_tool("list_culture_plates", {})
+        plate_count = len(result) if isinstance(result, list) else "?"
+        print(f"  [ OK ] Workcell MCP: reachable at {WORKCELL_API_BASE} ({plate_count} plates)")
+    except Exception as e:
+        short = str(e)[:80]
+        print(f"  [FAIL] Workcell MCP: {short}")
+        all_ok = False
+
+    # --- 3. Backend MCP connectivity ---
+    try:
+        result = _mcp_call("get_server_info", {})
+        if result is None:
+            print(f"  [WARN] Backend MCP:  reachable but returned empty (token may be expired)")
+        else:
+            print(f"  [ OK ] Backend MCP:  reachable at {BACKEND_MCP_URL}")
+    except Exception as e:
+        short = str(e)[:80]
+        print(f"  [FAIL] Backend MCP:  {short}")
+        all_ok = False
+
+    # --- 4. Dashboard / Cloudflare ---
+    dash_running = False
+    cf_url = None
+    try:
+        out = subprocess.run(["pgrep", "-fl", "streamlit"], capture_output=True, text=True).stdout
+        if "streamlit" in out:
+            dash_running = True
+            print(f"  [ OK ] Dashboard:    running (port 8501)")
+        else:
+            print(f"  [WARN] Dashboard:    not running — start with: streamlit run dashboard.py &")
+    except Exception:
+        pass
+
+    try:
+        if Path("/tmp/cloudflared.log").exists():
+            for line in reversed(Path("/tmp/cloudflared.log").read_text().splitlines()):
+                if "trycloudflare.com" in line:
+                    import re as _re
+                    m = _re.search(r"https://\S+\.trycloudflare\.com", line)
+                    if m:
+                        cf_url = m.group(0)
+                        break
+        if cf_url:
+            print(f"  [ OK ] Cloudflare:   {cf_url}")
+        else:
+            print(f"  [WARN] Cloudflare:   tunnel not running — start with: cloudflared tunnel --url http://localhost:8501 &")
+    except Exception:
+        pass
+
+    print()
+
+    # --- 5. Plate prep ---
+    global DATA_DIR
+    DATA_DIR = Path(__file__).parent / "data" / plate_barcode
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    state_path = DATA_DIR / "state.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        print(f"  Resuming experiment (iteration {state['current_iteration'] + 1}/{MAX_ITERATIONS})")
+    else:
+        state = load_state()  # returns fresh default state when no file exists
+        print(f"  New experiment (all {MAX_ITERATIONS} iterations)")
+
+    print_reagent_plate_setup(state)
+    print_tiprack_estimates(state)
+
+    if all_ok:
+        print(f"  All systems GO. Run: python gradient_descent.py run {plate_barcode}")
+    else:
+        print(f"  Fix the issues above, then run: python gradient_descent.py run {plate_barcode}")
+    print()
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -1573,11 +1767,12 @@ def print_status():
 def main():
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python gradient_descent.py run <plate_barcode>     # Fresh start")
-        print("  python gradient_descent.py resume <plate_barcode>  # Continue from last state")
-        print("  python gradient_descent.py dry-run <plate_barcode> # Preview next iteration")
-        print("  python gradient_descent.py status                  # Show current state")
-        print("  python gradient_descent.py reset                   # Reset state")
+        print("  python gradient_descent.py preflight <plate_barcode> # Pre-flight checks + setup")
+        print("  python gradient_descent.py run <plate_barcode>        # Fresh start")
+        print("  python gradient_descent.py resume <plate_barcode>     # Continue from last state")
+        print("  python gradient_descent.py dry-run <plate_barcode>    # Preview next iteration")
+        print("  python gradient_descent.py status                     # Show current state")
+        print("  python gradient_descent.py reset                      # Reset state")
         print()
         print("Environment variables:")
         print(f"  WORKCELL_HOST={WORKCELL_HOST}")
@@ -1591,7 +1786,13 @@ def main():
     if command in ("status", "reset") and len(sys.argv) >= 3:
         DATA_DIR = Path(__file__).parent / "data" / sys.argv[2]
 
-    if command == "status":
+    if command == "preflight":
+        if len(sys.argv) < 3:
+            print("Usage: python gradient_descent.py preflight <plate_barcode>")
+            return
+        run_preflight(sys.argv[2])
+
+    elif command == "status":
         print_status()
 
     elif command == "reset":
